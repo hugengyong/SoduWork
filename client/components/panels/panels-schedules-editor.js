@@ -135,7 +135,11 @@ function _schNormalizeModelOptions(result) {
     const value = String(name || '').trim();
     if (!value || seen.has(value)) return;
     seen.add(value);
-    out.push({ name: value, label: String((raw && raw.label) || value) });
+    const localOnly = raw?.localOnly === true || raw?.source === 'local';
+    const label = String((raw && raw.label) || value);
+    out.push({ name: value, label: localOnly && !/\u672c\u673a\s*$/.test(label)
+      ? label + ' · ' + _schEditorTx('\u672c\u673a') : label,
+      ...(localOnly ? { localOnly: true, source: 'local' } : {}) });
   };
   rows.forEach(add); names.forEach(add);
   return out;
@@ -158,9 +162,36 @@ function _schNativeOptionsFor(agentId) {
   return (_schNativeModelOptions && _schNativeModelOptions[String(agentId || '')]) || [];
 }
 
+function _schAgentCanUseLocalModel(agent) {
+  if (!agent || agent.nativeModelPick === true || agent.remote === true || (agent.mode && agent.mode !== 'local')) return false;
+  const cli = String(agent.cli || agent.adapterId || agent.id || '').replace(/^local:/, '').toLowerCase();
+  return cli === 'pi' && agent.localModelPick !== false;
+}
+
+async function _schLocalModelOptions() {
+  const api = (typeof SoduWorkAPI !== 'undefined' ? SoduWorkAPI : window.SoduWorkAPI);
+  const bridge = window.soduWorkAPI?.localModels;
+  try {
+    const catalog = typeof api?.localModels === 'function'
+      ? await api.localModels()
+      : (bridge && typeof bridge.get === 'function' ? await bridge.get() : null);
+    return (Array.isArray(catalog?.usable) ? catalog.usable : [])
+      .filter(row => row && row.localOnly === true && row.modality !== 'image' && row.modality !== 'video')
+      .map(row => {
+        const name = String(row.name || row.id || '').trim();
+        const label = String(row.label || row.modelName || row.name || row.id || '').trim();
+        return { ...row, name, label: label && !/\u672c\u673a\s*$/.test(label)
+          ? label + ' · ' + _schEditorTx('\u672c\u673a') : label,
+          localOnly: true, source: 'local' };
+      })
+      .filter(row => row.name);
+  } catch (_) { return []; }
+}
+
 function _schModelOptionsFor(agentId) {
   const agent = _schAgents.find(item => String(item.id) === String(agentId || ''));
-  return agent && agent.nativeModelPick ? _schNativeOptionsFor(agent.id) : _schModelOptions;
+  if (agent && agent.nativeModelPick) return _schNativeOptionsFor(agent.id);
+  return _schModelOptions.filter(row => !row?.localOnly || _schAgentCanUseLocalModel(agent));
 }
 
 async function _schLoadNativeModelOptions(agents) {
@@ -200,6 +231,9 @@ async function _schLoadExecutionAgents(context) {
         });
         if (scope === _schScope) {
           _schModelOptions = _schNormalizeModelOptions(result);
+          const local = await _schLocalModelOptions();
+          const seen = new Set(_schModelOptions.map(row => row.name));
+          local.forEach(row => { if (!seen.has(row.name)) { _schModelOptions.push(row); seen.add(row.name); } });
           _schDefaultModel = String((result && result.defaultModel) ||
             (_schModelOptions[0] && _schModelOptions[0].name) || '').trim();
         }

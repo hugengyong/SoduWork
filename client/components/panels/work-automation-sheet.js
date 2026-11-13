@@ -254,16 +254,29 @@
     return state.agents.find(item => String(item.id) === String(id || '')) || null;
   }
 
+  function agentCanUseLocalModel(agent) {
+    if (!agent || agent.nativeModelPick === true) return false;
+    if (agent.remote === true || (agent.mode && agent.mode !== 'local')) return false;
+    const cli = String(agent.cli || agent.adapterId || agent.id || '').replace(/^local:/, '').toLowerCase();
+    return cli === 'pi' && agent.localModelPick !== false;
+  }
+
   function modelEntries(current, agentId) {
     const agent = agentById(agentId);
     const selected = String(current || '').trim();
     if (agent && agent.modelPick === false && agent.nativeModelPick !== true) {
       return [{ name: '', label: tx('由底座自身管理模型') }];
     }
-    const source = agent?.nativeModelPick ? agent.modelOptions : state.modelOptions;
+    const source = agent?.nativeModelPick ? agent.modelOptions :
+      state.modelOptions.filter(item => !item?.localOnly || agentCanUseLocalModel(agent));
     const rows = Array.isArray(source) ? source.slice() : [];
-    const normalized = rows.map(raw => ({ name: String(raw?.name || raw?.id || raw || '').trim(),
-      label: String(raw?.label || raw?.displayName || raw?.name || raw?.id || raw || '').trim() }))
+    const normalized = rows.map(raw => {
+      const localOnly = raw?.localOnly === true || raw?.source === 'local';
+      const name = String(raw?.name || raw?.id || raw || '').trim();
+      const label = String(raw?.label || raw?.displayName || raw?.name || raw?.id || raw || '').trim();
+      return { name, label: localOnly && label && !/\u672c\u673a\s*$/.test(label)
+        ? label + ' · ' + tx('\u672c\u673a') : label, localOnly };
+    })
       .filter(item => item.name);
     if (selected && !normalized.some(item => item.name === selected)) {
       normalized.unshift({ name: selected, label: selected + tx('（已保存，当前不可用）'), stale: true });
@@ -283,7 +296,8 @@
   function modelField(current, agentId) {
     const agent = agentById(agentId);
     const managed = agent && agent.modelPick === false && agent.nativeModelPick !== true;
-    const options = agent?.nativeModelPick ? agent.modelOptions : state.modelOptions;
+    const options = agent?.nativeModelPick ? agent.modelOptions :
+      state.modelOptions.filter(item => !item?.localOnly || agentCanUseLocalModel(agent));
     const disabled = Boolean(managed || ((!Array.isArray(options) || !options.length) && !current));
     const localOnly = String(agent?.id || '').startsWith('local:') && !(Array.isArray(options) && options.length);
     const hint = managed ? tx('当前底座自行管理模型') : localOnly
@@ -306,7 +320,8 @@
       option.disabled = Boolean(item.stale || item.placeholder); return option;
     }));
     const info = agentById(agent.value);
-    const options = info?.nativeModelPick ? info.modelOptions : state.modelOptions;
+    const options = info?.nativeModelPick ? info.modelOptions :
+      state.modelOptions.filter(item => !item?.localOnly || agentCanUseLocalModel(info));
     select.disabled = Boolean(info && info.modelPick === false && info.nativeModelPick !== true) ||
       ((!Array.isArray(options) || !options.length) && !current);
     select.value = current;

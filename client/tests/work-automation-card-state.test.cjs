@@ -92,6 +92,26 @@ test('automation option loading preserves managed and native model choices', asy
   assert.match(read('work-automation-sheet'), /本机模型仅支持本机对话；后台自动化需要 Hub 托管模型/);
 });
 
+test('automation option loading keeps device-local Pi models and marks the owner route', async () => {
+  const f = fixture();
+  const localRef = 'local:model-' + 'b'.repeat(32);
+  f.api.localModels = async () => ({ usable: [{ id: localRef, name: localRef,
+    modelName: 'qwen-local', label: 'Qwen Local', localOnly: true, modality: 'chat' }] });
+  f.api.taskExecutionOptions = async () => ({ substrates: [
+    { key: 'local:pi', cli: 'pi', name: 'Pi', modelPick: true, locationMode: 'local' },
+    { key: 'runner:remote:pi', cli: 'pi', name: 'Remote Pi', modelPick: true, locationMode: 'remote' },
+    { key: 'local:pi-mixed', cli: 'pi', name: 'Mixed Pi', modelPick: true, locationMode: 'mixed' },
+  ], modelOptions: [{ name: 'managed-model', label: 'Managed model' }], defaultModel: 'managed-model', repos: [] });
+  const loaded = await f.context.WorkAutomationCardState.loadOptions({ text: 'local automation' });
+  assert.deepEqual(loaded.modelOptions.map(row => row.name), ['managed-model', localRef]);
+  assert.equal(loaded.modelOptions[1].localOnly, true);
+  assert.equal(loaded.agents[0].localModelPick, true);
+  assert.equal(loaded.agents[1].localModelPick, false);
+  assert.equal(loaded.agents[1].remote, true);
+  assert.equal(loaded.agents[2].localModelPick, false);
+  assert.equal(loaded.agents[2].remote, true);
+});
+
 test('requirement entry is an independent disabled draft and cancel creates nothing', async () => {
   const f = fixture();
   const source = {id: 'requirement-one', title: '<Original requirement>', requirementVersion: 3};

@@ -109,6 +109,24 @@ test('automation editor keeps model selection independent from the chosen Agent'
   assert.equal(run(ctx, '_schAgentAllowsModel("local:pi")'), true);
 });
 
+test('automation editor exposes local models only for the owner Pi route', async () => {
+  const localRef = 'local:model-' + 'd'.repeat(32);
+  const ctx = context({
+    taskExecutionOptions: async () => ({ substrates: [
+      { key: 'local:pi', cli: 'pi', name: 'Pi', available: true, modelPick: true,
+        locations: [{ assigneeId: 'local:pi', mode: 'local', label: '本机' }] },
+      { key: 'runner:remote:pi', cli: 'pi', name: 'Remote Pi', available: true, modelPick: true,
+        locations: [{ assigneeId: 'runner:remote:pi', mode: 'remote', label: '远程' }] },
+    ], modelOptions: [{ name: 'managed-model', label: 'Managed model' }] }),
+    localModels: async () => ({ usable: [{ id: localRef, name: localRef, label: 'Qwen Local', localOnly: true, modality: 'chat' }] }),
+  });
+  await run(ctx, '_schLoadExecutionAgents({})');
+  const localField = run(ctx, '_schModelFieldHtml("", "local:pi")');
+  assert.match(localField, new RegExp(localRef));
+  assert.match(localField, /Qwen Local[^<]*本机/);
+  assert.doesNotMatch(run(ctx, '_schModelFieldHtml("", "runner:remote:pi")'), new RegExp(localRef));
+});
+
 test('a new automation loads the default native substrate without loading unrelated catalogs', async () => {
   const queried = [];
   const ctx = context({ taskExecutionOptions: async () => ({ substrates: [

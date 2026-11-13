@@ -55,13 +55,42 @@
       reset() { epoch++; records.clear(); },
     };
   }
+  async function localModelOptions() {
+    const api = global.SoduWorkAPI;
+    const bridge = global.soduWorkAPI?.localModels;
+    try {
+      const catalog = typeof api?.localModels === 'function'
+        ? await api.localModels()
+        : (bridge && typeof bridge.get === 'function' ? await bridge.get() : null);
+      return (Array.isArray(catalog?.usable) ? catalog.usable : [])
+        .filter(item => item && item.localOnly === true &&
+          item.modality !== 'image' && item.modality !== 'video')
+        .map(item => ({ ...item, name: String(item.name || item.id || '').trim(),
+          label: String(item.label || item.modelName || item.name || item.id || '').trim(),
+          source: 'local', localOnly: true }))
+        .filter(item => item.name);
+    } catch (_) {
+      // A secure-store failure must not hide managed choices or make the
+      // automation editor claim that the Runner is unavailable.
+      return [];
+    }
+  }
+  function mergeModelOptions(managed, local) {
+    const rows = Array.isArray(managed) ? managed.slice() : [];
+    const seen = new Set(rows.map(item => String(item?.name || item?.id || '').trim()).filter(Boolean));
+    for (const item of local || []) {
+      if (!seen.has(item.name)) { rows.push(item); seen.add(item.name); }
+    }
+    return rows;
+  }
   async function loadOptions(seed) {
     const A = global.SoduWorkAPI;
     if (A?.taskExecutionOptions) {
       try {
         const result = await A.taskExecutionOptions({ title: String(seed?.text || '').trim().slice(0, 60), note: String(seed?.text || '').trim().slice(0, 8000), tags: [] });
-        const modelOptions = Array.isArray(result?.modelOptions) ? result.modelOptions.slice() :
+        const managedModelOptions = Array.isArray(result?.modelOptions) ? result.modelOptions.slice() :
           (Array.isArray(result?.models) ? result.models.map(name => ({ name, label: name })) : []);
+        const modelOptions = mergeModelOptions(managedModelOptions, await localModelOptions());
         const nativeAgents = (result?.substrates || []).filter(item => item?.key && item.nativeModelPick);
         const bridge = global.soduWorkAPI && (global.soduWorkAPI.conversationSession || global.soduWorkAPI.piSession);
         const nativeModels = Object.create(null);
@@ -74,13 +103,23 @@
           } catch (_) { nativeModels[item.key] = []; }
         }));
         return { agents: (result?.substrates || []).filter(item => item?.key).map(item => ({
-          id: String(item.key), name: String(item.name || item.cli || item.key), adapterId: String(item.adapterId || item.cli || ''),
+          id: String(item.key), key: String(item.key), cli: String(item.cli || item.adapterId || ''),
+          name: String(item.name || item.cli || item.key), adapterId: String(item.adapterId || item.cli || ''),
           available: item.available !== false, note: String(item.note || ''), locationLabel: String(item.locationLabel || ''),
           onlineSeats: Math.max(0, Number(item.onlineSeats) || 0),
           modelPick: item.modelPick !== false, nativeModelPick: item.nativeModelPick === true,
+          modelSource: String(item.modelSource || ''),
+          // Device-owned encrypted models are valid only for the local Pi
+          // conversation worker. Keep this fact on the row so the sheet can
+          // hide the same opaque references from remote/native targets.
+          localModelPick: String(item.key) === 'local:pi' && item.modelPick !== false &&
+            (!item.locationMode || item.locationMode === 'local'),
+          mode: String(item.locationMode || 'local'),
+          remote: String(item.locationMode || 'local') !== 'local',
+          locations: Array.isArray(item.locations) ? item.locations : [],
           modelOptions: nativeModels[item.key] || (Array.isArray(item.modelOptions) ? item.modelOptions.slice() : []),
         })), repos: result?.repos || [], reason: String(result?.availability?.agentReason || ''),
-          modelOptions, defaultModel: String(result?.defaultModel || '') };
+          modelOptions, defaultModel: String(result?.defaultModel || ''), defaultModels: result?.defaultModels || {}, nativeModels };
       } catch (_) { /* Read the existing roster endpoint for compatibility with older Hub versions. */ }
     }
     const agents = A?.listAIAgents ? await A.listAIAgents().catch(() => ({ agents: [] })) : { agents: [] };

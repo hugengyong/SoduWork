@@ -46,19 +46,27 @@ test('non-Pi runtimes cannot resolve local credentials or forward their referenc
   assert.equal(store.resolve.mock.callCount(), 0);
 });
 
-test('local selections cannot be uploaded through remote parsing, plans or schedules', async () => {
-  const f = fixture();
+test('local selections stay out of remote parsing and plans but work for owner-device Pi schedules', async () => {
+  const localRef = 'local:model-' + 'a'.repeat(32);
+  const f = fixture(async () => ({ providers: [{ id: 'ollama', localOnly: true }],
+    usable: [{ id: localRef, name: localRef, localOnly: true, modality: 'chat' }],
+    myModels: [], revision: 2 }));
   for (const model of ['local:private:model', 'image::private::local:private:model']) {
     const parsed = await f.api.parseTaskText('Retain this draft.', model);
     assert.match(parsed._parseError, /原文已保留/);
     await assert.rejects(f.api.aiPlan('task', { model }), /本地模型/);
-    await assert.rejects(f.api.preflightSchedule({ modelName: model }), /本地模型/);
-    await assert.rejects(f.api.createSchedule({ modelName: model }), /本地模型/);
-    await assert.rejects(f.api.updateSchedule('schedule', { modelName: model }), /本地模型/);
+    await assert.rejects(f.api.preflightSchedule({ modelName: model, assigneeId: 'local:pi' }), /本机模型/);
+    await assert.rejects(f.api.createSchedule({ modelName: model, assigneeId: 'local:pi' }), /本机模型/);
+    await assert.rejects(f.api.updateSchedule('schedule', { modelName: model, assigneeId: 'local:pi' }), /本机模型/);
   }
   assert.equal(f.requests.length, 0);
+  await f.api.preflightSchedule({ modelName: localRef, assigneeId: 'local:pi' });
+  await f.api.createSchedule({ modelName: localRef, assigneeId: 'local:pi' });
+  await f.api.updateSchedule('schedule', { modelName: localRef, assigneeId: 'local:pi' });
+  await assert.rejects(f.api.createSchedule({ modelName: localRef, assigneeId: 'runner:remote:pi' }), /本机模型/);
+  assert.equal(f.requests.length, 3);
   await f.api.createSchedule({ modelName: 'managed-model' });
-  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests.length, 4);
 });
 
 test('managed key patches never replace omitted provider or model lists', async () => {

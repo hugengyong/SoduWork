@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,13 @@ from .schedule_run_contracts import (
 CAPABILITY_SKILLS = {
     "browser": "browser-use", "computer": "computer-use", "office": "office",
 }
+
+_LOCAL_MODEL_REFERENCE = re.compile(r"^local:model-[a-f0-9]{32}$")
+
+
+def is_device_local_model(value: str) -> bool:
+    """Return true only for opaque local-model references from the desktop store."""
+    return bool(_LOCAL_MODEL_REFERENCE.fullmatch(str(value or "").strip()))
 
 
 def normalize_conversation_schedule(s):
@@ -113,6 +121,8 @@ async def validate_selected_model(session: AsyncSession, s) -> None:
     aid = str(getattr(s, "assignee_id", "") or "").strip()
     if not aid:
         raise ValueError("指定模型前请先选择执行 Agent")
+    if is_device_local_model(model_name) and aid != "local:pi":
+        raise ValueError("本机模型仅支持本机 Pi 自动化，不能交给远程或其他 Agent")
     client_id = str(getattr(s, "owner_client_id", "") or "").strip()
     client = await session.get(models.Client, client_id) if client_id else None
     if client is None:
@@ -139,6 +149,15 @@ async def _schedule_model_readiness(session, client, ctx: dict,
     model_kind, model_name = str(model_kind or "").strip(), str(model_name or "").strip()
     if not model_name:
         return {"ok": True, "model": "", "detail": "跟随底座默认模型"}
+    if is_device_local_model(model_name):
+        if model_kind != "local:pi":
+            return {"ok": False, "model": model_name,
+                    "detail": "本机模型仅支持本机 Pi 自动化"}
+        # The encrypted catalog and provider credentials stay on the owner
+        # desktop. The client performs the final local-store lookup before
+        # saving; Hub only validates the opaque reference and route.
+        return {"ok": True, "model": model_name,
+                "detail": "本机 Pi 模型将在所属设备上验证"}
     if agent_execution_options.is_native_model_kind(model_kind) or not agent_execution_options.supports_soduwork_model_kind(model_kind):
         return agent_route_selection.model_readiness(ctx, model_kind, model_name)
     try:
@@ -237,6 +256,11 @@ async def _preflight_execution(session: AsyncSession, s,
         return {"state": "blocked", "mode": mode,
                 "message": ("读取 Agent 配置失败：" + str(exc))[:240]}
     model_name = str(getattr(s, "model_name", "") or "").strip()
+    if is_device_local_model(model_name) and aid != "local:pi":
+        return {"state": "blocked", "mode": mode,
+                "message": "本机模型仅支持本机 Pi 自动化",
+                "checks": [{"key": "model", "state": "blocked",
+                            "label": "本机模型不能交给远程或其他 Agent"}]}
     model_kind = aid if aid.startswith("local:") else (
         "local:" + aid.rsplit(":", 1)[-1] if aid.startswith("runner:") else aid)
     model_state = await _schedule_model_readiness(session, client, ctx, model_kind, model_name)

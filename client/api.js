@@ -840,6 +840,21 @@
   function requireRemoteModel(value) {
     if (isLocalModelChoice(value)) throw new Error('本地模型仅支持本机对话，请为后台任务选择托管模型');
   }
+  async function validateScheduleModel(body) {
+    const value = String(body?.modelName || '').trim();
+    if (!isLocalModelChoice(value)) return;
+    // A device-local model is an opaque reference and can only be consumed by
+    // the owner desktop's Pi automation worker. Never allow it to target a
+    // remote Runner or a native runtime.
+    if (!/^local:model-[a-f0-9]{32}$/.test(value) || String(body?.assigneeId || '').trim() !== 'local:pi') {
+      throw new Error('本机模型仅支持本机 Pi 自动化，不能交给远程或其他 Agent');
+    }
+    const catalog = await localModelCatalog();
+    const usable = Array.isArray(catalog?.usable) ? catalog.usable : [];
+    if (!usable.some(row => row?.localOnly === true && String(row.name || row.id || '') === value)) {
+      throw new Error('本机模型不存在或凭据未配置，请在「我的模型」中刷新');
+    }
+  }
   async function localModelCatalog() {
     var bridge = global.soduWorkAPI?.localModels;
     if (!bridge || typeof bridge.get !== 'function') return null;
@@ -1801,7 +1816,7 @@
       var v = await jfetch('/schedules/templates'); mark(true); return Array.isArray(v) ? v : [];
     },
     async preflightSchedule(b, options) {
-      requireRemoteModel(b?.modelName);
+      await validateScheduleModel(b || {});
       var epoch = _registrationEpoch, hub = base(), owner = taskStorageKey('ops');
       var r = await jfetch('/schedules/preflight',
         { method: 'POST', body: JSON.stringify(b || {}) });
@@ -1814,12 +1829,12 @@
       mark(true); return r || {};
     },
     async createSchedule(b) {
-      requireRemoteModel(b?.modelName);
+      await validateScheduleModel(b || {});
       var r = await jfetch('/schedules', { method: 'POST', taskScope: taskStorageKey('ops'), body: JSON.stringify(b || {}) });
       mark(true); return r;
     },
     async updateSchedule(sid, b) {
-      requireRemoteModel(b?.modelName);
+      await validateScheduleModel(b || {});
       var r = await jfetch('/schedules/' + encodeURIComponent(sid),
         { method: 'PUT', body: JSON.stringify(b || {}) });
       mark(true); return r;

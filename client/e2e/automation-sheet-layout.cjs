@@ -263,6 +263,27 @@ if (typeof electron === 'string') {
       assert.equal(await js('getComputedStyle(document.querySelector(".waz-body")).overflowY'), 'visible');
       assert.ok((await rect('.waz-sheet')).height > 800);
     });
+    await run('本机 Pi 显示本地模型并在远程 Pi 上隐藏', async row => {
+      const localRef = 'local:model-' + 'a'.repeat(32);
+      await js(`window._savedTaskExecutionOptions=SoduWorkAPI.taskExecutionOptions;window._savedLocalModels=SoduWorkAPI.localModels;SoduWorkAPI.taskExecutionOptions=async()=>({substrates:[
+        { key: 'local:pi', cli: 'pi', name: 'Pi', available: true, modelPick: true,
+          locations: [{ assigneeId: 'local:pi', mode: 'local', label: '本机' }] },
+        { key: 'runner:remote:pi', cli: 'pi', name: 'Remote Pi', available: true, modelPick: true,
+          locations: [{ assigneeId: 'runner:remote:pi', mode: 'remote', label: '远程' }] },
+      ],modelOptions:[{name:'hub-model',label:'Hub model'}],repos:[]});SoduWorkAPI.localModels=async()=>({usable:[{id:${JSON.stringify(localRef)},name:${JSON.stringify(localRef)},label:'Qwen Local',localOnly:true,modality:'chat'}]});void 0;`);
+      try {
+        await open();
+        const localOptions = await js('Array.from(document.querySelectorAll("[name=modelName] option")).map(o=>({value:o.value,label:o.textContent,disabled:o.disabled}))');
+        assert.ok(localOptions.some(o => o.value === localRef && /本机/.test(o.label) && !o.disabled));
+        await js("(()=>{const s=document.querySelector('[name=modelName]');s.value='hub-model';s.dispatchEvent(new Event('change',{bubbles:true}));const a=document.querySelector('[name=assigneeId]');a.value='runner:remote:pi';a.dispatchEvent(new Event('change',{bubbles:true}));})()");
+        await delay(80);
+        const remoteOptions = await js('Array.from(document.querySelectorAll("[name=modelName] option")).map(o=>o.value)');
+        assert.equal(remoteOptions.includes(localRef), false);
+        row.localRef = localRef;
+      } finally {
+        await js('SoduWorkAPI.taskExecutionOptions=window._savedTaskExecutionOptions;SoduWorkAPI.localModels=window._savedLocalModels;void 0;');
+      }
+    });
     report.errors = await js('errors');
     report.ok = report.cases.every(row => row.ok) && !report.errors.length && !report.networkRequests.length;
   }).catch(error => { report.error = String(error.stack || error); }).finally(() => {
