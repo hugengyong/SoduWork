@@ -2,6 +2,11 @@
 const _mdDrafts = new Map();
 const _mdChecks = new Map();
 function _mdCheckKey(pid, name) { return JSON.stringify([pid, name]); }
+function _mdClearCheck(key) {
+  // Abort before removing the record: an unsaved edit never reaches the host.
+  if (_mdChecks.get(key)?.pending) _mdCancelModelCheck(...JSON.parse(key));
+  _mdChecks.delete(key);
+}
 function _mdReconcileChecks(data) {
   const models = new Map((data.myModels || []).map(row => [_mdCheckKey(row.providerId, row.name), row]));
   for (const provider of data.providers || []) for (const row of provider.modelDefs || [])
@@ -24,9 +29,10 @@ function _mdModelListHtml(p, models, own) {
       (model.label && model.label !== model.name ? '<span class="md-model-id" data-user-content>' + esc(model.name) + '</span>' : '') +
       ModelCapabilitiesUI.badges(item) + '</div><div class="md-model-actions">' +
       (_mdType(model.modality) === 'chat' ? '<button type="button" data-mdcheck' + (check?.pending ? ' disabled' : '') + '>' + (check?.pending ? '检测中…' : '检测能力') + '</button>' : '') +
+      (check?.pending && check.modelRef ? '<button type="button" data-mdcancelcheck>取消检测</button>' : '') +
       (index >= 0 ? '<button type="button" data-mdedit="' + esc(p.id) + '|' + index + '">编辑</button>' +
         '<button type="button" data-mdel="' + esc(p.id) + '|' + index + '" title="移除模型" aria-label="移除模型">移除模型</button>' : '<span class="md-cap-unchecked">组织管理</span>') +
-      '</div>' + (_mdType(model.modality) === 'chat' ? '<div class="md-model-report">' + ModelCapabilitiesUI.report(check || item.capabilityCheck) + '</div>' : '') + '</article>';
+      '</div>' + (_mdType(model.modality) === 'chat' ? '<div class="md-model-report">' + ModelCapabilitiesUI.evidenceWarning(item) + ModelCapabilitiesUI.report(check || item.capabilityCheck) + '</div>' : '') + '</article>';
   }).join('') + '</div>';
 }
 function _mdModelEditorHtml(p) {
@@ -108,6 +114,10 @@ function _mdBindModels(box) {
     const [pid, name] = JSON.parse(button.closest('[data-md-model]').dataset.mdModel);
     _mdCheckModel(pid, name);
   }));
+  box.querySelectorAll('[data-mdcancelcheck]').forEach(button => button.addEventListener('click', () => {
+    const [pid, name] = JSON.parse(button.closest('[data-md-model]').dataset.mdModel);
+    _mdCancelModelCheck(pid, name);
+  }));
 }
 function _mdApplyModel(editor) {
   if (_mdSaveFlight || editor.isConnected === false) return;
@@ -142,26 +152,58 @@ function _mdApplyModel(editor) {
     const model = { ...(old || {}), providerId: pid, name, label: value('[data-mdlabel]') || name, modality, config, ...(ctxWindow !== undefined ? { ctxWindow } : {}) };
     delete model.capabilityProfile; delete model.capabilityCheck;
     if (old) _mdMyModels.splice(_mdMyModels.indexOf(old), 1, model); else _mdMyModels.push(model);
-    _mdChecks.delete(_mdCheckKey(pid, name));
-    if (original) _mdChecks.delete(_mdCheckKey(pid, original));
+    _mdClearCheck(_mdCheckKey(pid, name));
+    if (original) _mdClearCheck(_mdCheckKey(pid, original));
     _mdDrafts.delete(pid); _mdMarkOwnedDirty(_mdProvider(pid) || pid); _mdRender();
   } catch (error) { petSay(error.message); }
 }
 async function _mdCheckModel(pid, name) {
   const key = _mdCheckKey(pid, name);
   if (_mdChecks.get(key)?.pending) return;
-  const pending = { pending: true };
+  const local = _mdProvider(pid)?.localOnly === true;
+  const pending = { pending: true, controller: new AbortController(),
+    ...(local ? { requestId: 'cap-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) } : {}) };
   _mdChecks.set(key, pending); _mdRender();
+  let unsubscribe;
   try {
     if (_mdNeedsSave(pid) && !await _mdSave(false)) throw Error('请先保存模型配置，再检测能力');
+    pending.controller.signal.throwIfAborted();
+    if (local) {
+      pending.modelRef = _mdMyModels.find(item => item.providerId === pid && item.name === name)?.id;
+      unsubscribe = globalThis.soduWorkAPI?.localModels?.onCapabilityProgress?.(value => {
+        if (value.requestId !== pending.requestId || _mdChecks.get(key) !== pending) return;
+        (pending.checks ||= {})[value.check] = { status: value.status, code: value.code };
+        _mdRender();
+      });
+      _mdRender();
+    }
     const report = await SoduWorkAPI.checkMyModelCapabilities({ providerId: pid, model: name,
-      localOnly: _mdProvider(pid)?.localOnly === true, checks: ['connection', 'imageInput', 'toolCalling', 'streaming'] });
+      localOnly: local, ...(pending.requestId ? { requestId: pending.requestId } : {}), checks: ['connection', 'imageInput', 'toolCalling', 'streaming'] },
+      { signal: pending.controller.signal });
     if (_mdChecks.get(key) !== pending) return;
     _mdChecks.set(key, report);
     const row = _mdMyModels.find(item => item.providerId === pid && item.name === name) || _mdProvider(pid)?.modelDefs?.find(item => item.name === name);
-    if (row && report.capabilityProfile) row.capabilityProfile = report.capabilityProfile;
+    if (row && report.capabilityProfile) { delete row.capabilityEvidenceError; Object.assign(row, { capabilityProfile: report.capabilityProfile,
+      capabilityCheck: report, ...(report.configRevision ? { configRevision: report.configRevision } : {}),
+      ...(report.runtimeRevision ? { runtimeRevision: report.runtimeRevision } : {}) }); }
+    const connection = report.checks?.connection;
+    if (connection?.status === 'passed' || connection?.status === 'failed') _mdTest[pid] = { state: connection.status === 'passed' ? 'ok' : 'bad', detail: '' };
     if (globalThis.ComposeModelPicker?.refresh) await ComposeModelPicker.refresh(true);
-    globalThis.soduWorkAPI?.broadcast?.('models', { providerId: pid });
-  } catch (error) { if (_mdChecks.get(key) === pending) _mdChecks.set(key, { error: _humanErr(error, '能力检测未完成，请重试') }); }
+    if (report.runtimeChanged !== false) globalThis.soduWorkAPI?.broadcast?.('models', { providerId: pid });
+  } catch (error) {
+    if (_mdChecks.get(key) === pending) _mdChecks.set(key, pending.controller.signal.aborted ? {
+      checkedAt: new Date().toISOString(), checks: Object.fromEntries(['connection', 'imageInput', 'toolCalling', 'streaming']
+        .map(check => [check, { status: 'cancelled', code: 'cancelled' }]))
+    } : { error: _humanErr(error, '能力检测未完成，请重试') });
+  }
+  finally { unsubscribe?.(); }
   _mdRender();
+}
+async function _mdCancelModelCheck(pid, name) {
+  const pending = _mdChecks.get(_mdCheckKey(pid, name));
+  if (!pending?.pending) return;
+  pending.controller.abort();
+  if (!pending.modelRef) return;
+  try { await globalThis.soduWorkAPI?.localModels?.cancelCapabilities?.({ modelRef: pending.modelRef, requestId: pending.requestId }); }
+  catch (_) { petSay('能力检测未能取消，请稍后重试'); }
 }

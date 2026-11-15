@@ -35,6 +35,8 @@ async def personal(session, client, expected=None, *, allow_patch=False):
     await session.execute(update(Client).where(Client.id == client.id).values(id=Client.id))
     await session.refresh(client)
     verify(client, expected, allow_patch=allow_patch)
+    from .model_capability_generations import track
+    track(session, Client, client.id, client)
 
 
 async def catalog(session, table, identifier, expected):
@@ -43,6 +45,8 @@ async def catalog(session, table, identifier, expected):
     await lock_setting(session, "model_catalog_edit_lock_v1")
     row = await session.get(table, identifier, populate_existing=True)
     verify(row, expected)
+    from .model_capability_generations import track
+    track(session, table, identifier, row)
     return row
 
 

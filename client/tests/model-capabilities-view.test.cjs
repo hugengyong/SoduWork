@@ -30,12 +30,38 @@ test('capability errors and form values are escaped independently of the host he
   }
 });
 
+test('manual capability labels cannot be masked by an unknown profile from an older host', () => {
+  const ui = load();
+  assert.equal(ui.profile({ config: { capabilities: { imageInput: 'supported' } },
+    capabilityProfile: { imageInput: { state: 'unknown', source: 'unknown' } } }).imageInput.source, 'configured');
+});
+
+test('reports distinguish the latest failed attempt from historical conclusive evidence', () => {
+  const html = load().report({ reportVersion: 2, apiFamily: 'chat-completions', checks: { imageInput: {
+    status: 'inconclusive', code: 'timeout', checkedAt: '2026-11-16T00:00:00Z' } }, verifiedChecks: {
+    imageInput: { status: 'passed', checkedAt: '2026-11-15T00:00:00Z' } } });
+  assert.match(html, /未能确认/); assert.match(html, /上次验证：支持/);
+});
+
+test('pending reports expose per-feature progress without presenting it as evidence', () => {
+  const html = load().report({ pending: true, checks: { imageInput: { status: 'running' }, connection: { status: 'passed' } } });
+  assert.match(html, /图片输入/); assert.match(html, /正在检测/); assert.match(html, /检测通过/);
+});
+
+test('unavailable local evidence prompts a recheck without exposing storage diagnostics', () => {
+  const ui = load();
+  assert.equal(ui.evidenceWarning({}), '');
+  const html = ui.evidenceWarning({ capabilityEvidenceError: true });
+  assert.match(html, /role="alert"/); assert.match(html, /重新检测/);
+  assert.doesNotMatch(html, /secure\.json|decrypt|credentials/);
+});
+
 function probeFixture(localOnly) {
   const calls = [], saves = [], scope = 'fixture-account/device';
   const providerId = localOnly ? 'device:shared-provider' : 'shared-provider';
   const provider = { id: providerId, name: 'Saved fixture service', localOnly,
     personal: true, baseUrl: 'https://fixture.invalid/v1', authMode: 'key', myKeySet: true };
-  const context = { URL, structuredClone, setTimeout, clearTimeout,
+  const context = { URL, AbortController, structuredClone, setTimeout, clearTimeout,
     document: { getElementById: () => null }, addEventListener() {},
     esc: value => String(value ?? ''), _humanErr: error => error.message,
     fixtureCatalog: { providers: [provider], myModels: [{ providerId, name: 'saved-model', localOnly }],
@@ -72,7 +98,8 @@ for (const localOnly of [true, false]) {
       'only the unrelated incomplete draft is dirty');
     await f.check();
     assert.deepEqual(f.saves, []);
-    assert.deepEqual(f.calls, [{ providerId: f.providerId, model: 'saved-model', localOnly,
+    if (localOnly) assert.match(f.calls[0].requestId, /^cap-/);
+    assert.deepEqual(f.calls.map(({ requestId, ...request }) => request), [{ providerId: f.providerId, model: 'saved-model', localOnly,
       checks: ['connection', 'imageInput', 'toolCalling', 'streaming'] }]);
     assert.equal(f.draft(), draft, 'probing another service cannot discard its draft, key or model editor');
     assert.equal(f.evaluate('_mdDirty'), true);
@@ -104,3 +131,162 @@ for (const localOnly of [true, false]) {
     assert.match(f.evaluate(`_mdChecks.get(_mdCheckKey(${JSON.stringify(f.providerId)}, 'saved-model')).error`), /请先保存模型配置/);
   });
 }
+
+test('local progress is scoped to a request and cancellation uses only its opaque saved reference', async () => {
+  const f = probeFixture(true), cancelled = []; let notify, finish, unsubscribed = false;
+  const modelRef = 'local:model-' + '1'.repeat(32);
+  f.evaluate(`_mdMyModels[0].id = ${JSON.stringify(modelRef)}`);
+  f.context.soduWorkAPI = { localModels: { onCapabilityProgress: callback => { notify = callback; return () => { unsubscribed = true; }; },
+    cancelCapabilities: async input => { cancelled.push(input); } } };
+  f.context.SoduWorkAPI.checkMyModelCapabilities = async request => { f.calls.push(request); return new Promise(resolve => { finish = resolve; }); };
+  const pending = f.check();
+  notify({ requestId: 'foreign', check: 'imageInput', status: 'passed' });
+  assert.equal(f.evaluate(`_mdChecks.get(_mdCheckKey(${JSON.stringify(f.providerId)},'saved-model')).checks`), undefined);
+  notify({ requestId: f.calls[0].requestId, check: 'imageInput', status: 'running' });
+  assert.match(f.evaluate(`ModelCapabilitiesUI.report(_mdChecks.get(_mdCheckKey(${JSON.stringify(f.providerId)},'saved-model')))`), /图片输入/);
+  await f.context._mdCancelModelCheck(f.providerId, 'saved-model');
+  assert.equal(cancelled[0].modelRef, modelRef); assert.equal(cancelled[0].requestId, f.calls[0].requestId);
+  finish({ checks: { imageInput: { status: 'cancelled', code: 'cancelled' } }, runtimeChanged: false }); await pending;
+  assert.equal(unsubscribed, true);
+});
+
+test('closing during a pending save cancels the intent before any capability request starts', async () => {
+  const f = probeFixture(true); let finishSave;
+  f.context.saveProbe = () => new Promise(resolve => { finishSave = resolve; });
+  f.evaluate(`_mdSave = saveProbe; _mdTouchProvider(${JSON.stringify(f.providerId)}, {name:'Changed fixture service'});`);
+  const pending = f.check();
+  f.context.closeModelsPanel(); finishSave(true); await pending;
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.evaluate(`_mdChecks.get(_mdCheckKey(${JSON.stringify(f.providerId)},'saved-model')).checks.connection.status`), 'cancelled');
+});
+
+test('a successful recheck clears the transient local-evidence warning', async () => {
+  const f = probeFixture(true);
+  f.evaluate('_mdMyModels[0].capabilityEvidenceError = true');
+  await f.check();
+  assert.equal(f.evaluate('Boolean(_mdMyModels[0].capabilityEvidenceError)'), false);
+});
+
+
+function pendingEditProbe(localOnly) {
+  const f = probeFixture(localOnly), cancelled = [];
+  const ref = 'local:model-' + '2'.repeat(32);
+  f.evaluate('_mdMyModels[0].id = ' + JSON.stringify(ref));
+  let release, signal;
+  f.context.soduWorkAPI = { localModels: { cancelCapabilities: async input => { cancelled.push(input); } } };
+  f.context.SoduWorkAPI.checkMyModelCapabilities = async (_request, options) => {
+    signal = options.signal;
+    return new Promise(resolve => { release = resolve; });
+  };
+  const pending = f.check();
+  return { ...f, cancelled, ref, signal,
+    settle: async () => { release({ checks: { connection: { status: 'cancelled', code: 'cancelled' } }, runtimeChanged: false }); await pending; } };
+}
+
+function editTarget(f, selector, attribute) {
+  const handlers = {};
+  const element = { isConnected: true, value: '', getAttribute: name => name === attribute
+    ? selector === '[data-mdel]' ? f.providerId + '|0' : f.providerId : null,
+  addEventListener: (name, handler) => { handlers[name] = handler; } };
+  f.context._mdBind({ querySelectorAll: name => name === selector ? [element] : [] });
+  return { element, handlers };
+}
+
+for (const localOnly of [true, false]) {
+  const ownership = localOnly ? 'local' : 'Hub';
+  for (const edit of ['provider-name', 'credential-input', 'model-rename', 'model-delete-save-fails']) {
+    test(ownership + ' pending capability check is cancelled before ' + edit + ' clears its UI record', async () => {
+      const f = pendingEditProbe(localOnly);
+      try {
+        if (edit === 'provider-name') {
+          f.context._mdTouchProvider(f.providerId, { name: 'Unsaved service name' });
+        } else if (edit === 'credential-input') {
+          const input = editTarget(f, '[data-pkey]', 'data-pkey');
+          input.element.value = 'synthetic-replacement-key';
+          input.handlers.input();
+        } else if (edit === 'model-rename') {
+          f.evaluate('_mdDrafts.set(' + JSON.stringify(f.providerId) + ', {original:"saved-model"})');
+          const values = { '[data-padd]': 'renamed-model', '[data-paddtype]': 'chat', '[data-paddthinking]': 'auto' };
+          f.context._mdApplyModel({ isConnected: true, dataset: { mdeditor: f.providerId },
+            querySelector: name => ({ value: values[name] || '' }) });
+          assert.equal(f.evaluate('_mdMyModels[0].name'), 'renamed-model');
+        } else {
+          f.evaluate('_mdSave = async () => false');
+          const button = editTarget(f, '[data-mdel]', 'data-mdel');
+          await button.handlers.click();
+        }
+        f.context.closeModelsPanel();
+        assert.equal(f.signal.aborted, true, 'Editing must cancel the waiting transport even if its row is then removed');
+        assert.equal(f.cancelled.length, localOnly ? 1 : 0);
+        if (localOnly) assert.equal(f.cancelled[0].modelRef, f.ref);
+      } finally { await f.settle(); }
+    });
+  }
+}
+
+function capabilityLocaleHost() {
+  const context = vm.createContext({ Date, Intl, Map, Set, Object,
+    localStorage: { getItem: () => null, setItem() {} },
+    document: { readyState: 'loading', documentElement: { dataset: {} }, querySelectorAll: () => [] },
+    addEventListener() {}, dispatchEvent() {}, CustomEvent: class {},
+  });
+  vm.runInContext('window=globalThis;let cfg={};const saveCfg=()=>{};', context);
+  for (const file of JSON.parse(fs.readFileSync(path.join(__dirname, '../core/locales/manifest.json'))))
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/locales', file), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/i18n.js'), 'utf8'), context);
+  return context;
+}
+
+for (const locale of ['en-US', 'ja-JP', 'ko-KR']) {
+  test('pending capability progress localizes each visible text node in ' + locale, () => {
+    const host = capabilityLocaleHost(), api = host.SoduWorkI18n;
+    api.setLocale(locale);
+    const html = load().report({ pending: true, checks: { connection: { status: 'passed' },
+      imageInput: { status: 'running' }, streaming: { status: 'skipped' } } });
+    const nodes = [...html.matchAll(/>([^<>]+)</g)].map(match => match[1]);
+    for (const text of nodes.filter(value => /[\u3400-\u9fff]/.test(value))) {
+      assert.ok(Object.hasOwn(host.SoduWorkLocaleMessages[locale], text), locale + ': ' + text);
+      assert.equal(api.translateText(text), host.SoduWorkLocaleMessages[locale][text]);
+    }
+  });
+
+  test('new capability guidance has native ' + locale + ' copy instead of a fallback', () => {
+    const host = capabilityLocaleHost(), api = host.SoduWorkI18n;
+    api.setLocale(locale);
+    for (const source of ["此协议暂无法自动检测","检测参数不被接受，能力仍未确认","检测已取消，已有证据仍保留","检测记录暂不可用，请重新检测","旧版检测结果需要重新验证","当前模型已确认不支持流式输出，当前执行方式需要流式接口，请选择兼容服务","当前模型已确认不支持工具调用，无法执行所选工具能力，请选择兼容模型","连接检查未通过，此项未执行","模型服务计费额度不可用，请检查供应商账户","检测预算已用尽，能力仍未确认","检测响应超过大小限制","流式响应未正常完成","上次验证：支持","上次验证：不支持","配置与最近检测结果不一致","配置冲突","取消检测","能力检测未能取消，请稍后重试","本地模型不存在或已不可用，请刷新目录后重试","当前客户端尚未提供本机能力检测，请更新客户端","正在检测","未执行"]) {
+      assert.ok(Object.hasOwn(host.SoduWorkLocaleMessages[locale], source), locale + ': ' + source);
+      const text = api.translateText(source);
+      assert.equal(text, host.SoduWorkLocaleMessages[locale][source]);
+      if (locale !== 'en-US') assert.notEqual(text, host.SoduWorkLocaleMessages['en-US'][source]);
+    }
+  });
+}
+
+for (const locale of ['zh-CN', 'en-US', 'ja-JP', 'ko-KR']) {
+  test('initial current and historical report timestamps follow ' + locale, () => {
+    const context = vm.createContext({ Date, SoduWorkI18n: { getLocale: () => locale } });
+    vm.runInContext(source, context);
+    const current = '2026-11-15T13:24:56Z', previous = '2026-10-14T02:13:45Z';
+    const report = { checkedAt: current, checks: { imageInput: { status: 'inconclusive', code: 'timeout' } },
+      verifiedChecks: { imageInput: { status: 'passed', checkedAt: previous } } };
+    const before = JSON.stringify(report), html = context.ModelCapabilitiesUI.report(report);
+    const times = [...html.matchAll(/<time[^>]*>([^<]*)<\/time>/g)].map(match => match[1]);
+    assert.deepEqual(times, [current, previous].map(value => new Date(value).toLocaleString(locale)));
+    assert.equal(JSON.stringify(report), before, 'Formatting must not mutate stored evidence');
+  });
+}
+
+test('locale changes reformat every report timestamp without changing its stored value', () => {
+  let locale = 'en-US';
+  const elements = ['2026-11-15T13:24:56Z', '2026-10-14T02:13:45Z'].map(value => ({ dataset: { mdCheckedAt: value }, textContent: '' }));
+  const listeners = new Map(), context = vm.createContext({ Date,
+    SoduWorkI18n: { getLocale: () => locale },
+    document: { querySelectorAll: () => elements },
+    addEventListener: (name, listener) => listeners.set(name, listener),
+  });
+  vm.runInContext(source, context);
+  for (const next of ['zh-CN', 'en-US', 'ja-JP', 'ko-KR', 'en-US']) {
+    locale = next; listeners.get('soduwork-locale-change')();
+    assert.deepEqual(elements.map(element => element.textContent), elements.map(element => new Date(element.dataset.mdCheckedAt).toLocaleString(next)));
+  }
+});

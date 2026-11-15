@@ -390,7 +390,7 @@ def with_llm(ctx: dict, llm: dict | None) -> dict:
                          "contextWindowEstimated": resolved_window["contextWindowEstimated"],
                          "contextWindowSource": resolved_window["contextWindowSource"]}
             from .runtime_images import model_fields
-            for field in ("input", "imageRouting", "visionFallbackAvailable", "maxOutputTokens", "capabilityProfile", "configRevision", "runtimeRevision"):
+            for field in ("input", "imageRouting", "visionFallbackAvailable", "maxOutputTokens", "capabilityProfile", "configRevision", "runtimeRevision", "compatibility"):
                 c2["llm"].pop(field, None)
             c2["llm"].update(model_fields(llm))
             from .model_definition_contracts import _clean_thinking_config

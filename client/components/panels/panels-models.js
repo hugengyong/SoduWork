@@ -102,6 +102,7 @@ function openModelsPanel(options) {
 }
 
 function closeModelsPanel() {
+  for (const [key, check] of _mdChecks) if (check.pending) _mdCancelModelCheck(...JSON.parse(key));
   ++_mdLoadId;
   if (typeof _mdCloseDeleteDialog === 'function') _mdCloseDeleteDialog();
   _mdLoadState = 'idle';
@@ -488,7 +489,7 @@ function _mdTouchProvider(pid, patch) {
     if (error) { error.hidden = true; error.textContent = ''; }
   }
   p._capStale = true;
-  for (const key of _mdChecks.keys()) if (JSON.parse(key)[0] === pid) _mdChecks.delete(key);
+  for (const key of _mdChecks.keys()) if (JSON.parse(key)[0] === pid) _mdClearCheck(key);
   _mdMarkOwnedDirty(p);
 }
 
@@ -526,7 +527,7 @@ function _mdBind(box) {
     if (_mdSaveFlight || el.isConnected === false) return;
     const pid = el.getAttribute('data-pkey');
     const provider = _mdProvider(pid); if (provider) provider._capStale = true;
-    for (const key of _mdChecks.keys()) if (JSON.parse(key)[0] === pid) _mdChecks.delete(key);
+    for (const key of _mdChecks.keys()) if (JSON.parse(key)[0] === pid) _mdClearCheck(key);
     if (el.value.trim()) _mdKeyEdits[pid] = el.value.trim();
     else delete _mdKeyEdits[pid];
     _mdMarkOwnedDirty(provider || pid);
@@ -584,7 +585,7 @@ function _mdBind(box) {
     if (at < 0) return;
     _mdMyModels.splice(at, 1);
     if (_mdDrafts.get(pid)?.original === target.name) _mdDrafts.delete(pid);
-    _mdChecks.delete(_mdCheckKey(pid, target.name));
+    _mdClearCheck(_mdCheckKey(pid, target.name));
     _mdMarkOwnedDirty(_mdProvider(pid) || pid); _mdRender();
     // Removing a personal model is an explicit destructive action. Persist it
     // immediately so it does not reappear when the panel is reopened, and so a

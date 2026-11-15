@@ -55,7 +55,7 @@ test('packaging hook checks distribution before downloads and records internal b
   write(root, 'third-party/public-release.json', JSON.stringify({schema: 1, pending: [{id: 'original-license', reason: 'Missing original grant'}]}));
   write(root, 'tools/distribution/PUBLIC-SOURCE.json', JSON.stringify({schema: 1, sourceOnly: true}));
   write(root, 'third-party/manifest.json', JSON.stringify({...manifest(), piVersion: '1.0.0'}));
-  for (const name of ['@earendil-works/pi-coding-agent', 'ssh2', 'asn1', 'bcrypt-pbkdf', 'safer-buffer', 'tweetnacl']) {
+  for (const name of ['@earendil-works/pi-coding-agent', 'openai', 'ssh2', 'asn1', 'bcrypt-pbkdf', 'safer-buffer', 'tweetnacl']) {
     const dir = pkg(client, name);
     write(dir, 'LICENSE', fs.readFileSync(path.join(ROOT, 'LICENSE')));
   }
@@ -76,7 +76,8 @@ test('packaging hook checks distribution before downloads and records internal b
 
   env.SODUWORK_INTERNAL_BUILD = '1';
   const rows = await exported.exports({electronPlatformName: 'linux'});
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 7);
+  assert.ok(rows.some(row => row.name === 'openai'), 'The directly packaged model-probe SDK must carry its license notice');
   assert.deepEqual(calls, ['download']);
   assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), {
     schema: 1, internalOnly: true, publicDistributionAllowed: false,

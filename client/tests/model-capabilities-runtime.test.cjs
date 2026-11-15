@@ -42,3 +42,60 @@ test('settings broadcasts invalidate cached model metadata without changing acti
  const before=config.generation();config._modelCache.set('fixture',{value:{id:'old'}});
  config.invalidate();assert.equal(config._modelCache.size,0);assert.equal(config.generation(),before+1);
 });
+
+test('saved local native-image and thinking declarations reach Pi and Runner configuration', async t => {
+ const store=require('../main/local-model-store.cjs');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'soduwork-local-cap-runtime-'));
+ const deps={app:{getPath:()=>root},safeStorage:{isEncryptionAvailable:()=>true,encryptString:value=>Buffer.from(value),decryptString:value=>value.toString()}};
+ store.configure(deps);t.after(()=>{store.configure(null);fs.rmSync(root,{recursive:true,force:true});});
+ const saved=store.save({providers:[{id:'fixture',baseUrl:'http://127.0.0.1:1/v1',authMode:'none'}],models:[{
+  providerId:'fixture',name:'gateway-alias',config:{thinkingMode:'always',thinkingFormat:'qwen',
+   capabilities:{imageInput:'supported'},imageRouting:'auto'}}]});
+ const got=await config.fetchModel(null,saved.usable[0].id,1000,()=>{throw Error('No network expected')},false,'pi',{allowLocal:true});
+ assert.deepEqual(got.model.input,['text','image']);assert.equal(got.model.imageRouting,'native');
+ assert.equal(got.model.reasoning,true);assert.equal(got.model.thinkingMode,'always');assert.equal(got.model.thinkingFormat,'qwen');
+ const llm=require('../main/agent-runtime/runner-config.cjs').create(got.model,'qwen').llm;
+ assert.deepEqual(llm.input,['text','image']);assert.equal(llm.thinkingMode,'always');
+});
+
+test('explicit local thinking disable is preserved despite a reasoning-family model name', async t => {
+ const store=require('../main/local-model-store.cjs');
+ t.mock.method(store,'resolve',()=>({id:'local:model-'+'1'.repeat(32),modelRef:'local:model-'+'1'.repeat(32),
+  name:'qwen-local',baseUrl:'http://127.0.0.1:1/v1',key:'',localOnly:true,config:{thinkingMode:'none',thinkingFormat:'qwen'}}));
+ const got=await config.fetchModel(null,'local:model-'+'1'.repeat(32),1000,()=>{throw Error('No network expected')},false,'pi',{allowLocal:true});
+ assert.equal(got.model.reasoning,false);assert.equal(got.model.thinkingMode,'none');
+});
+
+test('verified stream compatibility is emitted in the registered Pi transport and Runner contract',()=>{
+ const model={id:'alias',baseUrl:'http://127.0.0.1:1/v1',key:'fixture',compatibility:{maxTokensField:'max_tokens',streamOptions:false,toolChoice:'auto'}};
+ assert.equal(piProvider(model).compat.supportsUsageInStreaming,false);
+ assert.equal(piProvider(model).compat.maxTokensField,'max_tokens');
+ assert.equal(require('../main/agent-runtime/runner-config.cjs').create(model,'qwen').llm.compatibility.streamOptions,false);
+});
+
+test('required unsupported combinations fail clearly while unknown capabilities and text-only chat remain usable',()=>{
+ const base={id:'alias',baseUrl:'http://127.0.0.1:1/v1',key:'fixture'};
+ assert.throws(()=>piProvider({...base,capabilityProfile:{streaming:{state:'unsupported'}}}),/流式/);
+ assert.doesNotThrow(()=>piProvider({...base,capabilityProfile:{imageInput:{state:'unsupported'},streaming:{state:'unknown'}}}));
+ const model={...base,capabilityProfile:{toolCalling:{state:'unsupported'}}};
+ const runner=require('../main/agent-runtime/runner-config.cjs');
+ assert.throws(()=>runner.create(model,'qwen',['browser']),/工具/);
+ assert.doesNotThrow(()=>runner.create(model,'qwen',[]));
+});
+
+test('streaming Runner runtimes reject known unsupported streaming before launch',()=>{
+ const runner=require('../main/agent-runtime/runner-config.cjs');
+ const base={id:'alias',baseUrl:'http://127.0.0.1:1/v1',key:'fixture'};
+ for(const runtime of ['pi','harness2']){
+  assert.throws(()=>runner.create({...base,capabilityProfile:{streaming:{state:'unsupported'}}},runtime),/流式/);
+  assert.doesNotThrow(()=>runner.create({...base,capabilityProfile:{streaming:{state:'unknown'}}},runtime));
+ }
+});
+
+test('Pi preparation refuses a locally declared unsupported streaming route before requesting inference',async t=>{
+ const store=require('../main/local-model-store.cjs');
+ t.mock.method(store,'resolve',()=>({id:'local:model-'+'1'.repeat(32),modelRef:'local:model-'+'1'.repeat(32),
+  name:'alias',baseUrl:'http://127.0.0.1:1/v1',key:'',localOnly:true,config:{capabilities:{streaming:'unsupported'}}}));
+ const got=await config.fetchModel(null,'local:model-'+'1'.repeat(32),1000,()=>{throw Error('No network expected')},false,'pi',{allowLocal:true});
+ assert.equal(got.ok,false);assert.match(got.reason,/流式/);
+});

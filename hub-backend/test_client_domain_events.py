@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from sqlalchemy import event
 from test_model_runtime import IsolatedDatabase
-from app.models import Client, ModelDef, ModelProvider
+from app.models import Client, ModelDef, ModelProvider, User
 from app.api import admin, config, personal_models, agents, model_capabilities
 from app.services import client_domain_events as events, model_config_guard
 
@@ -15,8 +15,12 @@ class ClientDomainEventsTests(IsolatedDatabase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         await events.stop()
+        async with self.engine.begin() as connection:
+            await connection.run_sync(User.__table__.create)
         async with self.sessions() as session, session.begin():
             session.add_all([
+                User(id="alice", username="fixture-alice", is_active=True),
+                User(id="bob", username="fixture-bob", is_active=True),
                 Client(id="one", user_ref="alice", auth_state="active", model_keys={"provider": "personal-fixture"}),
                 Client(id="two", user_ref="alice", auth_state="active"),
                 Client(id="other", user_ref="bob", auth_state="active"),

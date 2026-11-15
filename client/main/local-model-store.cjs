@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { replaceFileSync } = require('./verified-file-replace.cjs');
+const capabilities = require('./local-model-capabilities.cjs');
+const capabilityContract = require('./model-capability-contract.cjs');
 
 const SCHEMA = 2;
 const OPAQUE_REF = /^local:model-[a-f0-9]{32}$/;
@@ -11,7 +13,7 @@ const ID = /^[a-z][a-z0-9_-]{0,47}$/;
 const MODEL_ID = /^[^\u0000\r\n]{1,160}$/u;
 let deps = null;
 
-function configure(value) { deps = value || null; }
+function configure(value) { deps = value || null; capabilities.configure(value ? { ...value, read: readRaw } : null); }
 function file() { return path.join(deps.app.getPath('userData'), 'local-models.secure.json'); }
 function secure() {
   if (!deps?.safeStorage?.isEncryptionAvailable?.() ||
@@ -32,7 +34,7 @@ function readRaw() {
     const decoded = JSON.parse(deps.safeStorage.decryptString(Buffer.from(value.cipher, 'base64')));
     if (!decoded || decoded.schema !== value.schema || !Array.isArray(decoded.providers) ||
         !Array.isArray(decoded.models) || !record(decoded.keys) || !Number.isSafeInteger(decoded.revision)) throw Error();
-    const normalized = normalize(decoded);
+    const normalized = normalize(decoded, { persisted: true });
     if (decoded.schema === SCHEMA) return normalized;
     if (normalized.revision === Number.MAX_SAFE_INTEGER) invalid('配置版本');
     // Persist the random identity once before exposing it. A failed migration
@@ -57,8 +59,18 @@ function field(value, max, label, fallback = '') {
   if (typeof value !== 'string' || value.trim().length > max) invalid(label);
   return value.trim();
 }
-function normalize(input) {
+function inheritedPolicy(model, current) {
+  if (!current) return false;
+  const previous = current.models.find(row => row.providerId === model.providerId &&
+    (model.id ? row.id === canonicalIn(current, model.id) : row.name === model.name));
+  if (!previous || previous.modality !== model.modality) return false;
+  const policy = row => ({ ctxWindow: row.ctxWindow || 0, capabilities: row.config?.capabilities,
+    imageRouting: row.config?.imageRouting, maxOutputTokens: row.config?.maxOutputTokens });
+  return JSON.stringify(capabilityContract.stable(policy(previous))) === JSON.stringify(capabilityContract.stable(policy(model)));
+}
+function normalize(input, { persisted = false, current } = {}) {
   if (!record(input)) invalid('配置格式');
+  const storedSchemaTwo = persisted && input.schema === SCHEMA;
   const rawProviders = input.providers ?? [], rawModels = input.models ?? [], rawKeys = input.keys ?? {};
   if (!Array.isArray(rawProviders) || rawProviders.length > 50) invalid('服务列表（最多 50 项）');
   if (!Array.isArray(rawModels) || rawModels.length > 200) invalid('模型列表（最多 200 项）');
@@ -91,17 +103,26 @@ function normalize(input) {
     if (modelSeen.has(key)) invalid('模型 ID 重复');
     const modelRef = raw.id == null ? '' : field(raw.id, 2048, '模型引用');
     if (modelRef && !OPAQUE_REF.test(modelRef) && !legacyParts(modelRef)) invalid('模型引用');
-    if (input.schema === SCHEMA && !OPAQUE_REF.test(modelRef)) invalid('模型引用');
+    if (storedSchemaTwo && !OPAQUE_REF.test(modelRef)) invalid('模型引用');
+    if (storedSchemaTwo && raw.capabilityEpoch != null && !/^[a-f0-9]{32}$/.test(raw.capabilityEpoch)) invalid('模型能力版本');
     if (modelRef && references.has(modelRef)) invalid('模型引用重复');
     if (modelRef) references.add(modelRef);
     const modality = raw.modality ?? 'chat';
     if (!['chat', 'image', 'video'].includes(modality)) invalid('模型类型');
     if (raw.config != null && !record(raw.config)) invalid('模型参数');
     if (raw.ctxWindow != null && (!Number.isSafeInteger(raw.ctxWindow) || raw.ctxWindow < 0)) invalid('上下文窗口');
-    models.push({ ...(modelRef ? { id: modelRef } : {}), providerId, name, label: raw.label === name ? name.slice(0, 80) :
+    const model = { ...(modelRef ? { id: modelRef } : {}),
+      ...(storedSchemaTwo && raw.capabilityEpoch ? { capabilityEpoch: raw.capabilityEpoch } : {}),
+      providerId, name, label: raw.label === name ? name.slice(0, 80) :
       field(raw.label, 80, '模型名称', name.slice(0, 80)) || name.slice(0, 80), modality,
       ...(raw.config && typeof raw.config === 'object' && !Array.isArray(raw.config) ? { config: raw.config } : {}),
-      ...(Number.isSafeInteger(raw.ctxWindow) && raw.ctxWindow > 0 ? { ctxWindow: raw.ctxWindow } : {}) });
+      ...(Number.isSafeInteger(raw.ctxWindow) && raw.ctxWindow > 0 ? { ctxWindow: raw.ctxWindow } : {}) };
+    // Old hosts accepted these policy values. Preserve inherited settings until
+    // that policy is edited, while keeping all structural checks on disk reads.
+    if (modality === 'chat' && !persisted && !inheritedPolicy(model, current)) {
+      capabilityContract.validate(model.config || {}, model.ctxWindow || 0);
+    }
+    models.push(model);
     modelSeen.add(key);
   }
   const keys = Object.create(null);
@@ -112,8 +133,8 @@ function normalize(input) {
     if (key) keys[id] = key;
   }
   const aliases = Object.create(null);
-  if (input.schema === SCHEMA && !record(input.aliases)) invalid('模型引用映射');
-  if (input.aliases != null) {
+  if (storedSchemaTwo && !record(input.aliases)) invalid('模型引用映射');
+  if (persisted && input.aliases != null) {
     if (!record(input.aliases)) invalid('模型引用映射');
     for (const [legacyRef, modelRef] of Object.entries(input.aliases)) {
       const parts = legacyParts(legacyRef);
@@ -167,7 +188,14 @@ function identify(value, current) {
     // alias remains an encrypted tombstone, so history cannot select a new key.
     const legacy = ref(row.providerId, row.name);
     if (!Object.hasOwn(aliases, legacy)) aliases[legacy] = id;
-    return { ...row, id };
+    const identified = { ...row, id };
+    // Publish the evidence epoch in the same encrypted replacement as the edit.
+    // Sidecar cleanup can then fail without reviving evidence after an A/B/A edit.
+    const same = existing && capabilities.sameTarget(current, existing, value, identified);
+    // An upgraded model may already have new evidence bound to its original,
+    // absent epoch. Cosmetic saves preserve that identity until a real edit.
+    if (same && !existing.capabilityEpoch) return identified;
+    return { ...identified, capabilityEpoch: same ? existing.capabilityEpoch : crypto.randomBytes(16).toString('hex') };
   });
   return { ...value, models, aliases };
 }
@@ -199,15 +227,16 @@ function referenceAliases() {
   });
 }
 function publicCatalog(value = readRaw()) {
+  const enriched = capabilities.enrich(value);
   const providers = value.providers.map(provider => ({ ...provider, personal: true,
     keySet: provider.authMode === 'none' || Boolean(value.keys[provider.id]),
     keyLen: value.keys[provider.id]?.length || 0,
     myKeySet: provider.authMode === 'none' || Boolean(value.keys[provider.id]),
     myKeyLen: value.keys[provider.id]?.length || 0,
-    modelDefs: value.models.filter(model => model.providerId === provider.id).map(model => ({ ...model, localOnly: true })),
+    modelDefs: enriched.filter(model => model.providerId === provider.id).map(model => ({ ...model, localOnly: true })),
     modelNames: value.models.filter(model => model.providerId === provider.id).map(model => model.name),
   }));
-  const usable = value.models.filter(model => {
+  const usable = enriched.filter(model => {
     const provider = value.providers.find(row => row.id === model.providerId);
     return provider && (provider.authMode === 'none' || value.keys[provider.id]);
   }).map(model => {
@@ -215,11 +244,13 @@ function publicCatalog(value = readRaw()) {
     return { id: model.id, providerId: model.providerId,
       name: model.id, modelName: model.name, label: model.label,
       modality: model.modality, config: model.config || {}, ctxWindow: model.ctxWindow || 0,
+      ...Object.fromEntries(['capabilityProfile', 'capabilityCheck', 'imageRouting', 'input', 'maxOutputTokens', 'compatibility',
+        'configRevision', 'runtimeRevision', 'visionFallbackAvailable', 'capabilityEvidenceError'].filter(key => model[key] !== undefined).map(key => [key, model[key]])),
       providerName: provider.name, keyFrom: 'local', own: true, localOnly: true };
   });
   return { providers, usable: usable.filter(row => row.modality === 'chat'),
     mediaUsable: { image: usable.filter(row => row.modality === 'image'), video: usable.filter(row => row.modality === 'video') },
-    myModels: value.models.map(model => ({ ...model, localOnly: true })),
+    myModels: enriched.map(model => ({ ...model, localOnly: true })),
     revision: value.revision };
 }
 function get() { return publicCatalog(); }
@@ -246,9 +277,10 @@ function save(input = {}) {
     providers,
     models: Object.hasOwn(input, 'models') ? input.models : current.models.filter(model => providerIds.has(model.providerId)),
     keys: mergedKeys,
-  }), current);
+  }, { current }), current);
   next.revision = current.revision + 1;
   write(next);
+  capabilities.changed(current, next);
   return publicCatalog(next);
 }
 function resolve(modelRef) {
@@ -261,7 +293,8 @@ function resolve(modelRef) {
   if (!model) return null;
   const provider = value.providers.find(row => row.id === model.providerId);
   if (!provider || (provider.authMode !== 'none' && !value.keys[provider.id])) return null;
-  return { ...model, modelRef: model.id, runtimeId: model.id, configRevision: value.revision, baseUrl: provider.baseUrl,
+  const projected = capabilities.enrich(value).find(row => row.id === model.id);
+  return { ...model, ...projected, modelRef: model.id, runtimeId: model.id, catalogRevision: value.revision, baseUrl: provider.baseUrl,
     key: provider.authMode === 'none' ? '' : value.keys[provider.id],
     provider: provider.id, providerName: provider.name, kind: provider.kind, authMode: provider.authMode,
     localOnly: true,
@@ -304,7 +337,7 @@ async function test(providerId, modelName, fetchImpl = global.fetch) {
         })));
         if (nextModels.length !== latest.models.length) {
           if (latest.revision === Number.MAX_SAFE_INTEGER) invalid('配置版本');
-          const next = identify(normalize({ providers: latest.providers, models: nextModels, keys: latest.keys }), latest);
+          const next = identify(normalize({ providers: latest.providers, models: nextModels, keys: latest.keys }, { current: latest }), latest);
           next.revision = latest.revision + 1;
           write(next);
         }

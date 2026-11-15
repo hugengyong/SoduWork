@@ -127,12 +127,14 @@ test('same-ID local and Hub providers keep distinct catalog, edits, and deletion
 test('same-ID provider probes and explicit key patches use their declared ownership', async t => {
   const f = await fixture(t, { collision: true }), api = f.box.SoduWorkAPI, localProbes = [];
   f.box.soduWorkAPI.localModels.test = async (providerId, model) => { localProbes.push({ providerId, model }); return { ok: true }; };
+  f.box.soduWorkAPI.localModels.checkCapabilities = async input => { localProbes.push({ modelRef: input.modelRef }); return { ok: true }; };
   await assert.rejects(api.testMyModel('custom-private'), /来源不明确/);
   await assert.rejects(api.checkMyModelCapabilities({ providerId: 'custom-private', model: 'private-model' }), /来源不明确/);
   assert.equal(f.state.probes.length, 0); assert.equal(localProbes.length, 0);
   await api.testMyModel('device:custom-private');
   await api.checkMyModelCapabilities({ providerId: 'device:custom-private', model: 'private-model' });
   assert.equal(localProbes.length, 2); assert.equal(localProbes[0].providerId, 'custom-private');
+  assert.equal(localProbes[1].modelRef, f.snapshot().myModels[0].id);
   assert.equal(f.state.probes.length, 0);
   await api.testMyModel('custom-private', { localOnly: false });
   await api.checkMyModelCapabilities({ providerId: 'custom-private', localOnly: false, model: 'hub-model' });

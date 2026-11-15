@@ -58,6 +58,41 @@ class NativeProviderTests(unittest.TestCase):
         self.assertEqual(transport.call_args.kwargs['timeout'], 120.0)
         self.assertEqual(deadlines, [120.0, 120.0, 120.0])
 
+    def test_known_unsupported_streaming_rejects_before_contacting_network(self):
+        payload = {'choices': [{'message': {'content': 'verified'}, 'finish_reason': 'stop'}]}
+        model = {**MODEL, 'capabilityProfile': {'streaming': {'state': 'unsupported'}}}
+        with patch.object(provider.urllib.request.OpenerDirector, 'open', return_value=Response(payload)) as transport:
+            with self.assertRaises(StructuredFailure) as caught:
+                provider.request(model, MESSAGES, [])
+        transport.assert_not_called()
+        self.assertEqual(caught.exception.code, 'model_streaming_unsupported')
+        diagnostic = failure_message(caught.exception, 'session/prompt')
+        self.assertIn('不支持流式输出', diagnostic)
+        self.assertNotIn(MODEL['key'], diagnostic)
+
+    def test_known_unsupported_required_tools_rejects_before_contacting_network(self):
+        payload = {'choices': [{'message': {'content': 'verified'}, 'finish_reason': 'stop'}]}
+        model = {**MODEL, 'capabilityProfile': {'toolCalling': {'state': 'unsupported'}}}
+        tools = [{'name': 'fixture_tool', 'parameters': {'type': 'object', 'properties': {}}}]
+        with patch.object(provider.urllib.request.OpenerDirector, 'open', return_value=Response(payload)) as transport:
+            with self.assertRaises(StructuredFailure) as caught:
+                provider.request(model, MESSAGES, tools)
+        transport.assert_not_called()
+        self.assertEqual(caught.exception.code, 'model_tools_unsupported')
+        self.assertIn('不支持工具调用', failure_message(caught.exception, 'session/prompt'))
+
+    def test_unknown_capabilities_and_tool_free_planning_remain_usable(self):
+        payload = {'choices': [{'message': {'content': 'verified'}, 'finish_reason': 'stop'}]}
+        cases = [({'streaming': {'state': 'unknown'}, 'toolCalling': {'state': 'unknown'}},
+                  [{'name': 'fixture_tool', 'parameters': {'type': 'object', 'properties': {}}}], False),
+                 ({'streaming': {'state': 'supported'}, 'toolCalling': {'state': 'unsupported'}}, [], True)]
+        for profile, tools, planning in cases:
+            with self.subTest(profile=profile), patch.object(provider.urllib.request.OpenerDirector, 'open',
+                    return_value=Response(payload)) as transport:
+                message, _ = provider.request({**MODEL, 'capabilityProfile': profile}, MESSAGES, tools, planning=planning)
+                self.assertEqual(message['content'], 'verified')
+                transport.assert_called_once()
+
     def test_keyless_local_model_sends_no_authentication_header(self):
         payload = {'choices': [{'message': {'content': 'verified'}, 'finish_reason': 'stop'}]}
         with patch.object(provider.urllib.request.OpenerDirector, 'open', return_value=Response(payload)) as transport:

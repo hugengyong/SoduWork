@@ -104,6 +104,14 @@ def prepare_session_environment(env: dict, data_root: str, runtime_ref: str,
 def prepare(env: dict, data_root: str, llm: dict, context_window: int, runtime_ref: str,
             run: dict | None = None) -> None:
     """Keep desktop and personal Pi state untouched; retain the same path on resume."""
+    profile = llm.get("capabilityProfile")
+    streaming = profile.get("streaming") if isinstance(profile, dict) else None
+    if isinstance(streaming, dict) and streaming.get("state") == "unsupported":
+        raise RuntimeError("当前模型已确认不支持流式输出，当前执行方式需要流式接口，请选择兼容服务")
+    tools = profile.get("toolCalling") if isinstance(profile, dict) else None
+    if isinstance(tools, dict) and tools.get("state") == "unsupported":
+        # The managed native Pi CLI starts with its built-in coding tools.
+        raise RuntimeError("当前模型已确认不支持工具调用，无法执行所选工具能力，请选择兼容模型")
     kind = llm.get("kind") or "openai-compat"
     provider = {
         "name": "SoduWork 模型服务",
@@ -120,6 +128,12 @@ def prepare(env: dict, data_root: str, llm: dict, context_window: int, runtime_r
     }
     if kind != "anthropic":
         provider["compat"] = {"supportsDeveloperRole": False, "supportsReasoningEffort": False}
+        from .model_capability_wire import compatibility
+        compat = compatibility(llm.get("compatibility"))
+        if "maxTokensField" in compat:
+            provider["compat"]["maxTokensField"] = compat["maxTokensField"]
+        if "streamOptions" in compat:
+            provider["compat"]["supportsUsageInStreaming"] = compat["streamOptions"]
     content = json.dumps({"providers": {"company": provider}}, ensure_ascii=False, indent=1)
     directory = prepare_session_environment(env, data_root, runtime_ref, run)
     try:

@@ -121,6 +121,29 @@ test('invalid local edits reject atomically instead of truncating or dropping st
   assert.equal(store.get().revision, 1);
 });
 
+test('renderer schema fields cannot bypass strict validation of a new model policy', t => {
+  const f = fixture();
+  t.after(() => { store.configure(null); fs.rmSync(f.root, { recursive: true, force: true }); });
+  const provider = { id: 'local', baseUrl: 'http://127.0.0.1:8686/v1', authMode: 'none' };
+  store.save({ providers: [provider], models: [{ providerId: 'local', name: 'existing' }] });
+  const target = path.join(f.root, 'local-models.secure.json'), before = fs.readFileSync(target);
+  const policies = [
+    { ctxWindow: 512 }, { config: { maxOutputTokens: 512 } },
+    { config: { capabilities: { imageInput: 'invalid' } } },
+    { config: { imageRouting: 'invalid' } },
+    { config: { imageRouting: 'native', capabilities: { imageInput: 'unsupported' } } },
+  ];
+  for (const policy of policies) {
+    assert.throws(() => store.save({ schema: 2, persisted: true, models: [
+      { providerId: 'local', name: 'new-policy', ...policy },
+    ] }));
+    assert.deepEqual(fs.readFileSync(target), before);
+    assert.throws(() => store.normalize({ schema: 2, providers: [provider], aliases: {}, models: [
+      { id: 'local:model-' + 'f'.repeat(32), providerId: 'local', name: 'new-policy', ...policy },
+    ] }));
+  }
+});
+
 test('invalid encrypted snapshots are preserved and cannot be normalized into a destructive save', t => {
   const f = fixture();
   t.after(() => { store.configure(null); fs.rmSync(f.root, { recursive: true, force: true }); });

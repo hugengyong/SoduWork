@@ -75,6 +75,45 @@ class PiRuntimeConfigTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(RuntimeError):
                 self.environment(llm={**self.llm, field: ""})
 
+    def test_known_unsupported_streaming_rejects_before_preparing_files(self):
+        llm = {**self.llm, "capabilityProfile": {"streaming": {"state": "unsupported"}}}
+        with patch.object(pi_runtime_config, "prepare_session_environment",
+                          wraps=pi_runtime_config.prepare_session_environment) as prepare:
+            with self.assertRaisesRegex(RuntimeError, "不支持流式输出") as caught:
+                self.environment(llm=llm)
+        prepare.assert_not_called()
+        self.assertFalse((self.root / "runner").exists())
+        self.assertNotIn(self.llm["key"], str(caught.exception))
+
+    def test_unknown_and_supported_streaming_keep_managed_model_usable(self):
+        for state in ("unknown", "supported"):
+            with self.subTest(state=state):
+                llm = {**self.llm, "capabilityProfile": {"streaming": {"state": state}}}
+                env = self.environment("streaming-" + state, llm)
+                self.assertTrue((Path(env["PI_CODING_AGENT_DIR"]) / "models.json").is_file())
+
+    def test_known_unsupported_tools_rejects_native_pi_default_coding_loadout_before_files(self):
+        llm = {**self.llm, "capabilityProfile": {"toolCalling": {"state": "unsupported"}}}
+        with patch.object(pi_runtime_config, "prepare_session_environment",
+                          wraps=pi_runtime_config.prepare_session_environment) as prepare:
+            with self.assertRaisesRegex(RuntimeError, "不支持工具调用") as caught:
+                self.environment(llm=llm)
+        prepare.assert_not_called()
+        self.assertFalse((self.root / "runner").exists())
+        self.assertNotIn(self.llm["key"], str(caught.exception))
+
+    def test_legacy_optional_parameter_negatives_do_not_block_managed_pi(self):
+        from app.services import model_capabilities
+        legacy = {"reportVersion": 1, "checks": {key: {
+            "status": "unsupported", "code": "capability_not_supported", "checkedAt": "old"}
+            for key in ("toolCalling", "streaming")}}
+        profile = model_capabilities.profile({}, legacy)
+        try:
+            env = self.environment(llm={**self.llm, "capabilityProfile": profile})
+        except RuntimeError as error:
+            self.fail("legacy optional-parameter refusal incorrectly blocked Pi: " + str(error))
+        self.assertTrue((Path(env["PI_CODING_AGENT_DIR"]) / "models.json").is_file())
+
     def test_failed_publication_preserves_previous_config_and_hides_error_details(self):
         env = self.environment()
         target = Path(env["PI_CODING_AGENT_DIR"]) / "models.json"

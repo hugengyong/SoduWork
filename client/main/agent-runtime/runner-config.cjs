@@ -3,6 +3,7 @@
 const contextWindow = require('../conversation/context-window');
 const modelSelection = require('../conversation/model-selection');
 const thinkingCapabilities = require('../conversation/thinking-capabilities');
+const capabilityContract = require('../model-capability-contract.cjs');
 
 // Ordinary turns and workflow nodes use the same managed-model contract,
 // including when a running node receives a renewed model ticket.
@@ -12,6 +13,10 @@ function create(model, adapterId, capabilityIds) {
   const requiredCapabilities = Array.from(new Set((Array.isArray(capabilityIds)
     ? capabilityIds : []).map(value => String(value || '').trim().toLowerCase()).filter(Boolean)));
   if (requiredCapabilities.length) cfg.requiredCapabilities = requiredCapabilities;
+  capabilityContract.assertRequired(model, [
+    ...(['pi', 'harness2'].includes(adapterId) ? ['streaming'] : []),
+    ...(requiredCapabilities.length ? ['toolCalling'] : []),
+  ]);
   // Local providers may intentionally have no API key (for example an
   // Ollama-compatible endpoint). Keep the opaque local reference out of the
   // child process and use the provider's wire model id instead.
@@ -41,6 +46,7 @@ function create(model, adapterId, capabilityIds) {
         ...(thinking.thinkingLevelMap ? { thinkingLevelMap: { ...thinking.thinkingLevelMap } } : {}),
       } : {}),
       ...(model.capabilityProfile ? { capabilityProfile: model.capabilityProfile } : {}),
+      ...(model.compatibility ? { compatibility: capabilityContract.compatibility(model.compatibility) } : {}),
       ...(model.configRevision ? { configRevision: model.configRevision } : {}),
       ...(model.runtimeRevision ? { runtimeRevision: model.runtimeRevision } : {}),
       ...(Array.isArray(model.input) ? { input: model.input.filter(value => value === 'text' || value === 'image') } : {}),

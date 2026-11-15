@@ -446,6 +446,13 @@ const soduWorkBridge = {
     get: () => ipcRenderer.invoke('local-models-get'),
     save: input => ipcRenderer.invoke('local-models-save', input || {}),
     test: (providerId, modelName) => ipcRenderer.invoke('local-models-test', String(providerId || ''), String(modelName || '')),
+    checkCapabilities: input => ipcRenderer.invoke('local-models-capabilities-check', input || {}),
+    cancelCapabilities: input => ipcRenderer.invoke('local-models-capabilities-cancel', input || {}),
+    onCapabilityProgress: fn => {
+      const handler = (_event, value) => { try { fn(value); } catch (_) {} };
+      ipcRenderer.on('local-models-capabilities-progress', handler);
+      return () => ipcRenderer.removeListener('local-models-capabilities-progress', handler);
+    },
   },
   localAgentModels: {
     get: input => ipcRenderer.invoke('local-agent-models-get', input || {}),

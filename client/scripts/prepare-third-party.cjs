@@ -82,7 +82,7 @@ function collect(packageDirs, root, output, manifest) {
     rows.push(row);
   }
   if (errors.length) throw new Error(errors.join('\n'));
-  fs.writeFileSync(path.join(output, 'npm-notices.json'), JSON.stringify({ schema: 1, scope: 'Desktop Pi runtime and SSH dependencies actually copied by extraResources; not a full native/Python SBOM', packages: rows }, null, 2) + '\n');
+  fs.writeFileSync(path.join(output, 'npm-notices.json'), JSON.stringify({ schema: 1, scope: 'Desktop Pi runtime, model probe and SSH dependencies actually copied by extraResources; not a full native/Python SBOM', packages: rows }, null, 2) + '\n');
   return rows;
 }
 async function prepare(context) {
@@ -101,7 +101,7 @@ async function prepare(context) {
   fs.rmSync(output, { recursive: true, force: true });
   const staged = require('./prepare-pi-runtime.cjs').preparePiRuntime(client);
   const dirs = packages(path.join(staged.output, 'node_modules'));
-  for (const name of ['ssh2', 'asn1', 'bcrypt-pbkdf', 'safer-buffer', 'tweetnacl']) dirs.push(path.join(client, 'node_modules', name));
+  for (const name of ['openai', 'ssh2', 'asn1', 'bcrypt-pbkdf', 'safer-buffer', 'tweetnacl']) dirs.push(path.join(client, 'node_modules', name));
   const rows = collect(dirs, ROOT, output, manifest);
   const shell = path.join(client, '.runtime/git');
   if (context?.electronPlatformName === 'win32') {

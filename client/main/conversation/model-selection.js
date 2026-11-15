@@ -132,10 +132,12 @@ function preference(app, ref) {
 }
 
 function piProvider(next) {
+  require('../model-capability-contract.cjs').assertRequired(next, ['streaming']);
   const thinking = thinkingCapabilities.profile(next);
   const localNoAuth = next?.localOnly === true && !String(next?.key || '').trim();
   const compat = {
     supportsDeveloperRole: false,
+    ...require('../model-capability-contract.cjs').piCompatibility(next),
     supportsReasoningEffort: thinking.supportsReasoningEffort,
     ...(thinking.format ? { thinkingFormat: thinking.format } : {}),
   };

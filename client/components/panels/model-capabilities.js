@@ -2,14 +2,19 @@
   'use strict';
   const names = { imageInput: '图片输入', toolCalling: '工具调用', streaming: '流式输出' };
   const states = { unknown: '未确认', supported: '支持', unsupported: '不支持' };
-  const statusNames = { passed: '检测通过', failed: '检测失败', unsupported: '不支持', inconclusive: '未能确认' };
+  const statusNames = { passed: '检测通过', failed: '检测失败', unsupported: '不支持', inconclusive: '未能确认', running: '正在检测', cancelled: '已取消', skipped: '未执行' };
   const sources = { configured: '手动配置', 'legacy-native': '已有配置', verified: '实际检测', unknown: '未确认' };
   const diagnostics = {
     timeout: '服务响应超时，可稍后重试', temporarily_unavailable: '服务暂时不可用，可稍后重试',
     credentials_or_access: '请检查凭据及模型访问权限', model_or_endpoint_missing: '请检查模型 ID 和接口地址',
     capability_not_supported: '服务明确返回不支持此能力', request_not_accepted: '服务未接受检测请求，请检查协议配置',
     expected_output_missing: '未收到预期结果，暂不能确认能力', invalid_response: '服务响应格式无法识别',
-    protocol_not_tested: '当前协议尚不支持自动检测，请手动配置'
+    protocol_not_tested: '此协议暂无法自动检测', parameter_not_supported: '检测参数不被接受，能力仍未确认',
+    cancelled: '检测已取消，已有证据仍保留', connection_blocked: '连接检查未通过，此项未执行',
+    legacy_recheck_required: '旧版检测结果需要重新验证',
+    billing_unavailable: '模型服务计费额度不可用，请检查供应商账户',
+    budget_exhausted: '检测预算已用尽，能力仍未确认', response_too_large: '检测响应超过大小限制',
+    response_limit: '检测响应超过大小限制', stream_interrupted: '流式响应未正常完成', stream_incomplete: '流式响应未正常完成'
   };
   // The workspace's esc is a lexical binding, not a window property. Keep this
   // shared component independent of how its host exposes formatting helpers.
@@ -24,15 +29,16 @@
     return Object.fromEntries(Object.keys(names).map(key => {
       const explicit = config.capabilities?.[key];
       const legacy = key === 'imageInput' && config.imageRouting === 'native';
-      return [key, profile[key] || { state: explicit && explicit !== 'unknown' ? explicit : legacy ? 'supported' : 'unknown',
-        source: explicit && explicit !== 'unknown' ? 'configured' : legacy ? 'legacy-native' : 'unknown' }];
+      return [key, explicit && explicit !== 'unknown' ? { ...profile[key], state: explicit, source: 'configured' }
+        : legacy ? { ...profile[key], state: 'supported', source: 'legacy-native' }
+        : profile[key] || { state: 'unknown', source: 'unknown' }];
     }));
   }
   function badges(model) {
     if (model.modality && model.modality !== 'chat') return '';
     return '<div class="md-cap-badges">' + Object.entries(profile(model)).map(([key, value]) =>
       '<span class="md-cap-badge is-' + (value.state === 'supported' ? 'supported' : 'neutral') + '" title="' + e(sources[value.source] || '未确认') + '">' +
-      names[key] + '<b>' + (states[value.state] || states.unknown) + '</b></span>').join('') + '</div>';
+      names[key] + '<b>' + (states[value.state] || states.unknown) + '</b>' + (value.conflict ? '<small title="配置与最近检测结果不一致">配置冲突</small>' : '') + '</span>').join('') + '</div>';
   }
   function fields(model) {
     const config = model.config || {};
@@ -75,18 +81,29 @@
   }
   function report(result) {
     if (!result) return '<span class="md-cap-unchecked">能力尚未检测</span>';
-    if (result.pending) return '<span role="status" class="md-cap-unchecked">正在检测能力…</span>';
+    if (result.pending) return '<div role="status" class="md-cap-unchecked"><span>正在检测能力…</span>' +
+      Object.entries(result.checks || {}).map(([key, check]) => '<div><span>' + (names[key] || '服务连接') + '</span> · <span>' +
+        (statusNames[check.status] || statusNames.inconclusive) + '</span></div>').join('') + '</div>';
     if (result.error) return '<span role="alert" class="md-cap-error">' + e(result.error) + '</span>';
     const rows = Object.entries(result.checks || {}).filter(([key]) => key === 'connection' || names[key]);
     const date = result.checkedAt ? new Date(result.checkedAt) : null;
     const time = date && !Number.isNaN(date.getTime()) ? date.toLocaleString(global.SoduWorkI18n?.getLocale?.() || undefined) : '';
+    const history = (key, check) => {
+      const previous = result.verifiedChecks?.[key];
+      if (!previous || previous.status === check.status && previous.checkedAt === check.checkedAt) return '';
+      return '<small><span>' + (previous.status === 'passed' ? '上次验证：支持' : '上次验证：不支持') + '</span>' +
+        (previous.checkedAt ? '<time data-user-content data-md-checked-at="' + e(previous.checkedAt) + '">' + e(new Date(previous.checkedAt).toLocaleString(global.SoduWorkI18n?.getLocale?.() || undefined)) + '</time>' : '') + '</small>';
+    };
     return '<details class="md-cap-report"><summary>检测结果' + (time ? '<time data-user-content data-md-checked-at="' + e(result.checkedAt) + '">' + e(time) + '</time>' : '') + '</summary><dl>' +
       rows.map(([key, check]) => '<div><dt>' + (names[key] || '服务连接') + '</dt><dd class="is-' + e(check.status) + '">' +
         (statusNames[check.status] || statusNames.inconclusive) + '</dd>' +
-        (diagnostics[check.code] ? '<small>' + diagnostics[check.code] + '</small>' : '') + '</div>').join('') +
+        (diagnostics[check.code] ? '<small>' + diagnostics[check.code] + '</small>' : '') + history(key, check) + '</div>').join('') +
       '</dl><p>检测结果仅适用于当前服务和模型配置；超时或网络异常不代表模型不支持。</p></details>';
   }
-  global.ModelCapabilitiesUI = { names, states, profile, badges, fields, read, report };
+  function evidenceWarning(model) {
+    return model.capabilityEvidenceError ? '<p role="alert" class="md-cap-error">检测记录暂不可用，请重新检测</p>' : '';
+  }
+  global.ModelCapabilitiesUI = { names, states, profile, badges, fields, read, report, evidenceWarning };
   global.addEventListener?.('soduwork-locale-change', () => {
     global.document?.querySelectorAll('[data-md-checked-at]').forEach(element => {
       const date = new Date(element.dataset.mdCheckedAt);

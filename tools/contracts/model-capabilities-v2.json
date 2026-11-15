@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 2,
+  "cases": [
+    {
+      "name": "verified-native-image",
+      "config": {},
+      "evidence": {"reportVersion": 2, "apiFamily": "chat-completions", "checks": {"imageInput": {"status": "passed", "checkedAt": "2026-11-15T00:00:00Z"}}},
+      "expected": {"imageInput": {"state": "supported", "source": "verified"}, "imageRouting": "native", "input": ["text", "image"]}
+    },
+    {
+      "name": "manual-unsupported-with-positive-evidence",
+      "config": {"capabilities": {"imageInput": "unsupported"}},
+      "evidence": {"reportVersion": 2, "apiFamily": "chat-completions", "checks": {"imageInput": {"status": "passed", "checkedAt": "2026-11-15T00:00:00Z"}}},
+      "expected": {"imageInput": {"state": "unsupported", "source": "configured", "conflict": true}, "imageRouting": "vision-fallback", "input": ["text"]}
+    },
+    {
+      "name": "legacy-native-is-not-verified",
+      "config": {"imageRouting": "native"},
+      "evidence": {"reportVersion": 2, "apiFamily": "chat-completions", "checks": {"imageInput": {"status": "inconclusive", "checkedAt": "2026-11-15T00:00:00Z"}}},
+      "expected": {"imageInput": {"state": "supported", "source": "legacy-native"}, "imageRouting": "native", "input": ["text", "image"]}
+    },
+    {
+      "name": "another-api-family-cannot-lend-evidence",
+      "config": {},
+      "evidence": {"reportVersion": 2, "apiFamily": "responses", "checks": {"imageInput": {"status": "passed", "checkedAt": "2026-11-15T00:00:00Z"}}},
+      "expected": {"imageInput": {"state": "unknown", "source": "unknown"}, "imageRouting": "vision-fallback", "input": ["text"]}
+    },
+    {
+      "name": "explicit-vision-adapter-retains-route",
+      "config": {"imageRouting": "vision-fallback"},
+      "evidence": {"reportVersion": 2, "apiFamily": "chat-completions", "checks": {"imageInput": {"status": "passed", "checkedAt": "2026-11-15T00:00:00Z"}}},
+      "expected": {"imageInput": {"state": "supported", "source": "verified"}, "imageRouting": "vision-fallback", "input": ["text"]}
+    },
+    {
+      "name": "latest-timeout-retains-historical-proof",
+      "config": {},
+      "evidence": {"reportVersion": 2, "apiFamily": "chat-completions", "checks": {"imageInput": {"status": "inconclusive", "code": "timeout", "checkedAt": "2026-11-16T00:00:00Z"}}, "verifiedChecks": {"imageInput": {"status": "passed", "checkedAt": "2026-11-15T00:00:00Z"}}},
+      "expected": {"imageInput": {"state": "supported", "source": "verified", "checkStatus": "inconclusive"}, "imageRouting": "native", "input": ["text", "image"]}
+    }
+  ]
+}

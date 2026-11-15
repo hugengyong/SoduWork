@@ -570,6 +570,7 @@ async def proxy_config(
             "maxOutputTokens": conf.get("maxOutputTokens") or model_capabilities.DEFAULT_OUTPUT,
             "configRevision": conf.get("configRevision") or "",
             "runtimeRevision": conf.get("runtimeRevision") or "",
+            "compatibility": model_capabilities.compatibility(conf.get("compatibility")),
             "label": hit.get("label") or conf["model"],
             "providerName": hit.get("providerName") or conf.get("provider") or "",
             "keyFrom": conf.get("keyFrom") or "",

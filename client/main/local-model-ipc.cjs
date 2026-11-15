@@ -3,6 +3,7 @@
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
 const store = require('./local-model-store.cjs');
+const capabilities = require('./local-model-capabilities.cjs');
 
 function install({ app, ipcMain, safeStorage, changed = () => {} }) {
   store.configure({ app, safeStorage });
@@ -26,6 +27,16 @@ function install({ app, ipcMain, safeStorage, changed = () => {} }) {
     if (result.ok) changed();
     return result;
   });
+  ipcMain.handle('local-models-capabilities-check', async (event, input) => {
+    assertDesk(event);
+    const result = await capabilities.check(input, { progress: value => {
+      try { event.sender.send('local-models-capabilities-progress', { requestId: input.requestId, ...value }); } catch { /* View closed. */ }
+    } });
+    if (result.runtimeChanged) changed();
+    return result;
+  });
+  ipcMain.handle('local-models-capabilities-cancel', (event, input) => { assertDesk(event); return capabilities.cancel(input); });
+  app.on?.('before-quit', () => capabilities.shutdown());
 }
 
 module.exports = { install };

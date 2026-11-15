@@ -1654,37 +1654,34 @@
         body: JSON.stringify({ providerId: providerId }) });
       mark(true); return r;
     },
-    async checkMyModelCapabilities(body) {
+    async checkMyModelCapabilities(body, options) {
       body = body || {};
+      options?.signal?.throwIfAborted();
       var scope = domainScope();
       var local = global.soduWorkAPI?.localModels;
       var localCatalog = await localModelCatalog();
+      options?.signal?.throwIfAborted();
       if (!sameDomainScope(scope)) throw staleTaskScope();
       var nativeId = deviceProviderId(body.providerId);
       var localProvider = (localCatalog?.providers || []).find(row => row?.id === nativeId);
       if (deviceProvider(body.providerId) || body.localOnly === true) {
         if (!localProvider) throw new Error('本地模型服务已不可用，请刷新目录后重试');
-        if (!local || typeof local.test !== 'function') throw new Error('本地模型存储不可用');
-        var localModel = String(body.model || '').trim() ||
-          (localCatalog?.myModels || []).find(row => row.providerId === nativeId)?.name || '';
-        var probe = await local.test(nativeId, localModel);
+        var localModel = (localCatalog?.myModels || []).find(row => row.providerId === nativeId && row.name === String(body.model || '').trim());
+        if (!localModel) throw new Error('本地模型不存在或已不可用，请刷新目录后重试');
+        if (typeof local?.checkCapabilities !== 'function') throw new Error('当前客户端尚未提供本机能力检测，请更新客户端');
+        var report = await local.checkCapabilities({ modelRef: localModel.id,
+          checks: Array.isArray(body.checks) ? body.checks : ['connection'],
+          ...(localModel.configRevision ? { expectedTargetRevision: localModel.configRevision } : {}),
+          ...(body.requestId ? { requestId: body.requestId } : {}) });
         if (!sameDomainScope(scope)) throw staleTaskScope();
-        var checks = {};
-        for (var key of (Array.isArray(body.checks) ? body.checks : ['connection'])) {
-          checks[key] = key === 'connection'
-            ? { status: probe?.ok ? 'passed' : 'failed', code: probe?.ok ? 'verified' : 'request_not_accepted' }
-            : { status: 'inconclusive', code: 'protocol_not_tested' };
-        }
-        return { ok: Boolean(probe?.ok), providerId: body.providerId, model: localModel,
-          checks, capabilityProfile: { imageInput: { state: 'unknown', source: 'unknown' },
-            toolCalling: { state: 'unknown', source: 'unknown' }, streaming: { state: 'unknown', source: 'unknown' } },
-          checkedAt: new Date().toISOString(), localOnly: true,
-          detail: probe?.detail || '' };
+        return { ...report, providerId: body.providerId, model: localModel.name };
       }
       if (localProvider && body.localOnly !== false) throw new Error('模型服务来源不明确，请刷新模型目录后重试');
       if (!sameDomainScope(scope)) throw staleTaskScope();
       var result = await jfetch('/my-models/capabilities/check', { method: 'POST',
-        body: JSON.stringify(body), signal: _abortSignal(140000) });
+        body: JSON.stringify({ providerId: body.providerId, model: body.model,
+          ...(Array.isArray(body.checks) ? { checks: body.checks } : {}) }),
+        signal: options?.signal ? AbortSignal.any([options.signal, _abortSignal(140000)]) : _abortSignal(140000) });
       await invalidateDomain('models', scope); return result;
     },
     /*

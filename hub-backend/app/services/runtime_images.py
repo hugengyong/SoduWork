@@ -63,6 +63,9 @@ def model_fields(llm: dict | None) -> dict:
         out["configRevision"] = row["configRevision"]
     if isinstance(row.get("runtimeRevision"), str):
         out["runtimeRevision"] = row["runtimeRevision"]
+    if isinstance(row.get("compatibility"), dict):
+        from .model_capability_wire import compatibility
+        out["compatibility"] = compatibility(row["compatibility"])
     return out
 
 

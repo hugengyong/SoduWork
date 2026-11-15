@@ -200,6 +200,7 @@ async send(text, turnAttachments, sendOptions) {
         };
       };
       let restoreSkills = () => {};
+      let restoreTools = () => {};
       let connectors = null;
       let modelRequestError = null;
       try {
@@ -251,6 +252,9 @@ async send(text, turnAttachments, sendOptions) {
         // model captured when the conversation was originally opened.
         // Raw image blocks require a server-declared native route; legacy clients
         // optimistically cached [text, image] for every gateway model.
+        restoreTools = require('./model-tools.cjs').prepare(ctx.piSession, ctx.prep.model,
+          Boolean((ctx.opts.capabilityIds || []).length || effectivePluginIds.length || selectedSkills.skills.length ||
+            runAsGoal && profile.kind !== 'conversation'));
         const nativeImages = Boolean(ctx.prep.model?.imageRouting === 'native' &&
           ctx.prep.model?.input?.includes('image'));
         const observationInputs = imageRouting.observationInputs(ctx.prep.model, visualInputs, ctx.piSession.messages,
@@ -550,7 +554,7 @@ async send(text, turnAttachments, sendOptions) {
           modelRecoveryGoal: runAsGoal, snapshot: ctx._snapshot() };
       } finally {
         runControl.finishTurn(ctx.run);
-        try { restoreSkills(); }
+        try { restoreTools(); restoreSkills(); }
         finally {
           connectors?.cleanup();
           if (pluginGrant && typeof pluginGrant.cleanup === 'function') pluginGrant.cleanup();

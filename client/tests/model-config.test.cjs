@@ -19,6 +19,26 @@ async function fetchDeclaredModel(metadata) {
     false, 'harness2');
 }
 
+test('unsupported streaming keeps Hub archives readable while rejecting a new Pi turn', async t => {
+  const modelConfig = require('../main/pi-session/model-config');
+  const rootDir = fsNode.mkdtempSync(path.join(os.tmpdir(), 'soduwork-history-capability-'));
+  t.after(() => fsNode.rmSync(rootDir, { recursive: true, force: true }));
+  const app = { getPath: () => rootDir };
+  const identity = { hub: 'https://hub.fixture.invalid', clientId: 'device-history-capability', session: 'synthetic-session' };
+  const modelName = 'historical-capability-model';
+  const fetchImpl = async () => new Response(JSON.stringify({ ok: true, key: 'synthetic-ticket', model: modelName,
+    baseUrl: 'https://gateway.fixture.invalid/v1', capabilityProfile: { streaming: { state: 'unsupported' } } }),
+  { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const historical = await modelConfig.fetchModel(identity, modelName, 1000, fetchImpl, false, 'pi',
+    { app, allowHistorical: true });
+  assert.equal(historical.ok, true, historical.reason);
+  assert.equal(historical.historical, true);
+  assert.equal(historical.model.key, 'history-only');
+  const active = await modelConfig.fetchModel(identity, modelName, 1000, fetchImpl, false, 'pi', { app });
+  assert.equal(active.ok, false);
+  assert.equal(active.code, 'MODEL_CAPABILITY_INCOMPATIBLE');
+});
+
 test('model configuration deadline recognizes runtime RPC cancellation without reporting quota exhaustion', async t => {
   const { MessageChannel } = require('node:worker_threads');
   const { createRpcPeer } = require('../main/agent-runtime/process-rpc');
@@ -214,8 +234,9 @@ test('local capability checks stay in the desktop process', async () => {
   const values = new Map(), calls = [], probes = [];
   const window = { dispatchEvent() {}, soduWorkAPI: { localModels: {
     get: async () => ({ providers: [{ id: 'custom-local', localOnly: true }],
-      myModels: [{ providerId: 'custom-local', name: 'qwen3', localOnly: true }], usable: [], mediaUsable: {} }),
-    test: async (providerId, model) => { probes.push({ providerId, model }); return { ok: true, detail: 'direct' }; },
+      myModels: [{ id: 'local:model-' + '1'.repeat(32), providerId: 'custom-local', name: 'qwen3', localOnly: true }], usable: [], mediaUsable: {} }),
+    checkCapabilities: async input => { probes.push(JSON.parse(JSON.stringify(input))); return { ok: true,
+      checks: { connection: { status: 'passed' }, streaming: { status: 'passed' } } }; },
   } } };
   vm.runInNewContext(read('api.js'), {
     window, User: {}, navigator: { platform: 'test' },
@@ -227,9 +248,9 @@ test('local capability checks stay in the desktop process', async () => {
   }, { filename: 'api.js' });
   const report = await window.SoduWorkAPI.checkMyModelCapabilities({ providerId: 'device:custom-local', model: 'qwen3', checks: ['connection', 'streaming'] });
   assert.equal(report.ok, true);
-  assert.deepEqual(probes, [{ providerId: 'custom-local', model: 'qwen3' }]);
+  assert.deepEqual(probes, [{ modelRef: 'local:model-' + '1'.repeat(32), checks: ['connection', 'streaming'] }]);
   assert.equal(report.checks.connection.status, 'passed');
-  assert.equal(report.checks.streaming.status, 'inconclusive');
+  assert.equal(report.checks.streaming.status, 'passed');
   assert.equal(calls.length, 0);
 });
 

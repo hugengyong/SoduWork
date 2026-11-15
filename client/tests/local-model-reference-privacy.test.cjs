@@ -35,6 +35,28 @@ function fixture(t) {
   return { root, app, file, safeStorage, seed };
 }
 function create() { return store.save({ providers: [provider], models: [model], keys: { private: 'synthetic-private-key' } }); }
+
+test('unsupported streaming keeps historical local chats readable without authorizing a new turn', async t => {
+  const f = fixture(t), saved = store.save({ providers: [provider], models: [{ ...model,
+    config: { capabilities: { streaming: 'unsupported' } } }], keys: { private: 'synthetic-private-key' } });
+  const reference = saved.myModels[0].id, modelConfig = require('../main/pi-session/model-config');
+  const identity = { hub: 'https://hub.fixture.invalid', clientId: 'device', session: 'synthetic-session' };
+  let requests = 0;
+  const fetchImpl = async () => { requests++; throw Error('A history read cannot contact a provider'); };
+  const historical = await modelConfig.fetchModel(identity, reference, 1000, fetchImpl, false, 'pi',
+    { app: f.app, allowLocal: true, allowHistorical: true });
+  assert.equal(historical.ok, true);
+  assert.equal(historical.model.historicalLocal, true);
+  assert.equal(historical.model.modelRef, reference);
+  assert.equal(historical.model.key, '');
+  assert.equal(JSON.stringify(historical).includes('synthetic-private-key'), false);
+  const active = await modelConfig.fetchModel(identity, reference, 1000, fetchImpl, false, 'pi',
+    { app: f.app, allowLocal: true });
+  assert.equal(active.ok, false);
+  assert.equal(active.code, 'MODEL_CAPABILITY_INCOMPATIBLE');
+  assert.equal(requests, 0);
+});
+
 function assertCipherOnly(file) {
   const encoded = fs.readFileSync(file, 'utf8'), value = JSON.parse(encoded);
   assert.deepEqual(Object.keys(value).sort(), ['cipher', 'schema']);
@@ -53,13 +75,16 @@ test('opaque identities persist across edits, encrypted reloads and model discov
   assert.equal(store.resolve(id).runtimeId, id);
   assert.equal(store.resolve(id).name, model.name);
   assert.equal(store.resolve(id).key, 'synthetic-private-key');
-  assert.equal(store.resolve(id).configRevision, first.revision);
+  assert.equal(store.resolve(id).catalogRevision, first.revision);
+  assert.equal(store.resolve(id).configRevision, first.myModels[0].configRevision);
+  assert.equal(JSON.stringify(first).includes('capabilityEpoch'), false);
   assertCipherOnly(f.file);
   store.configure({ app: f.app, safeStorage: f.safeStorage });
   const renamed = { ...first.myModels[0], name: 'renamed-private-model', label: 'Renamed private model' };
   const saved = store.save({ models: [renamed], expectedRevision: first.revision });
   assert.equal(saved.myModels[0].id, id);
-  assert.equal(store.resolve(id).configRevision, saved.revision);
+  assert.equal(store.resolve(id).catalogRevision, saved.revision);
+  assert.notEqual(store.resolve(id).configRevision, first.myModels[0].configRevision);
   assert.ok(saved.revision > first.revision);
   assert.equal(store.canonicalReference(store.ref(provider.id, model.name)), id);
   assert.equal(store.canonicalReference(store.ref(provider.id, renamed.name)), id);
@@ -93,6 +118,60 @@ test('legacy encrypted catalogs migrate once without losing credentials or chang
   assert.deepEqual(fs.readFileSync(f.file), after);
   assertCipherOnly(f.file);
 });
+
+for (const schema of [1, 2]) {
+  test(`schema-${schema} encrypted models with inherited small limits remain readable and repairable`, t => {
+    const f = fixture(t), priorId = 'local:model-' + 'a'.repeat(32);
+    const legacyConfig = { maxOutputTokens: 512, temperature: 0.25 };
+    f.seed({ schema, revision: 7, providers: [provider],
+      models: [{ ...model, ...(schema === 2 ? { id: priorId } : {}), ctxWindow: 512, config: legacyConfig }],
+      keys: { private: 'synthetic-private-key' },
+      ...(schema === 2 ? { aliases: { [store.ref(provider.id, model.name)]: priorId } } : {}) });
+    const original = fs.readFileSync(f.file), initial = store.get(), id = initial.myModels[0].id;
+    assert.match(id, OPAQUE);
+    if (schema === 2) {
+      assert.equal(id, priorId);
+      assert.deepEqual(fs.readFileSync(f.file), original, 'Reading schema two must preserve its encrypted bytes');
+    }
+    assert.equal(initial.myModels[0].ctxWindow, 512);
+    assert.deepEqual(initial.myModels[0].config, legacyConfig);
+    const afterRead = fs.readFileSync(f.file);
+    assert.deepEqual(store.get(), initial);
+    assert.deepEqual(fs.readFileSync(f.file), afterRead);
+
+    const originalEpoch = store._readRaw().models[0].capabilityEpoch;
+    const firstLabel = store.save({ models: [{ ...initial.myModels[0], label: 'First label edit' }] });
+    const epoch = store._readRaw().models[0].capabilityEpoch;
+    assert.equal(epoch, originalEpoch, 'A cosmetic save preserves an absent legacy epoch too');
+    const secondLabel = store.save({ models: [{ ...firstLabel.myModels[0], label: 'Second label edit' }] });
+    assert.equal(store._readRaw().models[0].capabilityEpoch, epoch, 'Later label edits preserve the upgraded epoch');
+    store.save({ providers: [{ ...provider, name: 'Updated provider label' }] });
+    assert.equal(store._readRaw().models[0].capabilityEpoch, epoch);
+    store.save({ keys: { private: 'replacement-synthetic-key' } });
+    assert.match(store._readRaw().models[0].capabilityEpoch, /^[a-f0-9]{32}$/);
+    assert.notEqual(store._readRaw().models[0].capabilityEpoch, epoch, 'A functional edit establishes a new durable epoch');
+    const inherited = store.get().myModels[0];
+    assert.equal(inherited.id, id);
+    assert.equal(inherited.label, secondLabel.myModels[0].label);
+    assert.equal(inherited.ctxWindow, 512);
+    assert.deepEqual(inherited.config, legacyConfig);
+    assert.equal(store.resolve(id).key, 'replacement-synthetic-key');
+
+    const beforeInvalid = fs.readFileSync(f.file);
+    assert.throws(() => store.save({ models: [{ ...inherited, ctxWindow: 2048,
+      config: { ...legacyConfig, maxOutputTokens: 768 } }] }), /Token/);
+    assert.deepEqual(fs.readFileSync(f.file), beforeInvalid);
+    const repairedConfig = { ...legacyConfig, maxOutputTokens: 1024,
+      capabilities: { imageInput: 'supported' }, imageRouting: 'native' };
+    const repaired = store.save({ models: [{ ...inherited, ctxWindow: 2048, config: repairedConfig }] });
+    assert.equal(repaired.myModels[0].id, id);
+    assert.equal(repaired.myModels[0].ctxWindow, 2048);
+    assert.deepEqual(repaired.myModels[0].config, repairedConfig);
+    store.configure({ app: f.app, safeStorage: f.safeStorage });
+    assert.deepEqual(store.get().myModels[0].config, repairedConfig);
+    assertCipherOnly(f.file);
+  });
+}
 
 test('failed encryption or file publication preserves a legacy snapshot and exposes no temporary identity', t => {
   const f = fixture(t), legacy = { schema: 1, revision: 4, providers: [provider], models: [model], keys: { private: 'synthetic-private-key' } };

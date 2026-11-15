@@ -11,7 +11,7 @@ async function run({ runner, agentId, model, assertCurrent = () => {}, timeoutMs
     throw Error('请选择受管型 Agent 和本机对话模型');
   }
   assertCurrent();
-  const cfg = runnerConfig.create({ ...model, id: model.modelRef, wireModelId: model.name,
+  const cfg = runnerConfig.create({ ...model, ...model.config, id: model.modelRef, wireModelId: model.name,
     maxOutputTokens: model.config?.maxOutputTokens }, agentId);
   const started = await runner.rpc('agent.probe', { key: agentId, llm: cfg.llm }, 15000);
   assertCurrent();

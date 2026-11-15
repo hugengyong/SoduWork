@@ -159,6 +159,8 @@
     "harness2.phase.组合执行方法": "Combining execution methods",
     "harness2.phase.检查组合计划": "Checking the combined plan",
     "harness2.detail.模型配置无效；请检查所选模型的服务地址、授权和输出上限。": "The model configuration is invalid. Check its service URL, authorization, and output limit.",
+    "harness2.detail.当前模型已确认不支持流式输出，当前执行方式需要流式接口，请选择兼容服务": "This model does not support streaming, which this runtime requires. Choose a compatible service.",
+    "harness2.detail.当前模型已确认不支持工具调用，无法执行所选工具能力，请选择兼容模型": "This model does not support the required tool calls. Choose a compatible model.",
     "harness2.detail.模型服务拒绝或未完成请求；请检查模型授权、服务状态和请求配置。": "The model service rejected or did not complete the request. Check authorization, service status, and request settings.",
     "harness2.detail.模型连接或响应超时；请检查所选模型服务、网络和代理设置后重试。": "The model connection or response timed out. Check the selected model service, network, and proxy settings, then retry.",
     "harness2.detail.无法连接模型服务；请检查服务地址、网络、代理和证书设置。": "Cannot connect to the model service. Check its URL, network, proxy, and certificate settings.",
