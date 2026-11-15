@@ -53,7 +53,7 @@ function resumeOptions(options) {
     modelName: row.active.modelName,
     reasoningEffort: row.active.reasoningEffort ?? options.reasoningEffort,
     accessPolicy: row.accessPolicy, readOnly: row.readOnly, activePluginIds: row.activePluginIds,
-    contextPrompts: [...(options.contextPrompts || []), segments.brief(row.prefix)] } };
+    contextPrompts: segments.contextPrompts(options.contextPrompts, row.prefix, row.active.adapterId) } };
 }
 function create({ raw: initial, options, restored, openNative, disposeNative, probe, catalog, changed }) {
   let raw = initial, record = restored, switching = false, closed = false, unsub = null, switchingCompletion = null, pendingModel = null;
@@ -157,7 +157,7 @@ function create({ raw: initial, options, restored, openNative, disposeNative, pr
         nativeDispatchId: '', nativeSessionStarted: undefined, verifyLegacySegment: false,
         intent: '', mode: '', goal: '', acceptance: '', accessPolicy: policy,
         activePluginIds: before.activePlugins || [],
-        contextPrompts: [...(options.contextPrompts || []), segments.brief(before)] };
+        contextPrompts: segments.contextPrompts(options.contextPrompts, before, agentId) };
       candidate = await openNative({ ...nextOptions, identity });
       await selection.validate?.();
       if (closed || busy(raw)) throw Error(closed ? '会话已关闭，本次切换已取消' : BUSY);

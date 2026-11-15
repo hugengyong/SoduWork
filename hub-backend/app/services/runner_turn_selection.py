@@ -67,7 +67,7 @@ def resume(ref, text, cfg):
             fresh.pop("_executionSelection", None)
             scoped = dict(run)
             skill_read_scope.for_run(scoped, fresh)
-            brief = _handoff_brief(ref, text).replace(
+            brief = _handoff_brief(ref, text, agent_id=wanted["agentId"]).replace(
                 "[SoduWork 上下文自动压缩：同一会话继续]",
                 "[SoduWork 执行底座或模型已切换：继续同一会话]")
             old = dict(run)

@@ -32,6 +32,7 @@ def runtime_resources(backend: Path) -> list[Path]:
     names = ("app/agent_catalog.json", "app/services/dsh_session_storage.mjs",
              "app/services/dsh_gateway_bundle/package.json",
              "app/services/dsh_gateway_bundle/cordis.patch.yml",
+             "app/services/dsh_gateway_bundle/identity.mjs",
              "app/services/harness2_vendor/LICENSE",
              "app/services/harness2_vendor/UPSTREAM.md")
     return [backend / name for name in names if (backend / name).is_file()]

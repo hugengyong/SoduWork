@@ -13,6 +13,7 @@ const { createBindings } = require('../conversation/task-bindings');
 const { createTurnQueue } = require('../pi-session/turn-queue');
 const toolGuard = require('../pi-session/tool-guard');
 const agentContract = require('../conversation/agent-contract');
+const agentIdentity = require('../conversation/agent-identity.cjs');
 const nativeLocale = require('../native-locale.cjs');
 const { CAPABILITIES, RuntimeContractError } = require('./contract');
 const { createEventFactory } = require('./events');
@@ -1192,7 +1193,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     const taskContext = taskJournal.context();
     const note = [next.promptText || _conversationPrompt(text, { ...opts, accessPolicy: turnPolicy }),
       next.materialUnderstandingPrompt,
-      ...(opts.contextPrompts || []), taskContext, _goalBrief(opts), _languageContract()].filter(Boolean).join('\n\n');
+      ...(opts.contextPrompts || []), taskContext, _goalBrief(opts), agentIdentity.contract(adapterId), _languageContract()].filter(Boolean).join('\n\n');
     const completion = waitForTurn();
     const dispatchedModelId = executionModelId(state.model);
     const dispatchedEffort = state.agentExecution?.reasoningEffort || '';
@@ -1318,7 +1319,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
       plugins: publicPluginBadges(next.plugins),
       promptText: [next.promptText || _conversationPrompt(text, { ...opts, accessPolicy: turnPolicy }),
         next.materialUnderstandingPrompt,
-        ...(opts.contextPrompts || []), taskContext, _languageContract()].filter(Boolean).join('\n\n'),
+        ...(opts.contextPrompts || []), taskContext, agentIdentity.contract(adapterId), _languageContract()].filter(Boolean).join('\n\n'),
       cfg: { ..._runnerConfig(state.model, adapterId, state.capabilityIds), skillSelection: next[TURN_SKILLS] || _skillRows(state.selectedSkills),
         ...(adapterId === 'codex' ? { codex_reasoning_effort: state.agentExecution?.reasoningEffort || '' } : {}),
         pluginResourceBundles: next[pluginTurn.RESOURCE_BUNDLES] || [],

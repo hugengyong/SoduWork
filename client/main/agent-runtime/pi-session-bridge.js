@@ -255,7 +255,7 @@ function createPiSessionBridge(options) {
               fromMessage: metric.fromMessage + offset, toMessage: metric.toMessage + offset }))] };
           legacyOptions = { ...legacyOptions, resumePath: '', resumeCwd: '', runtimeConversationId: '',
             nativeDispatchId: '', nativeSessionStarted: undefined, verifyLegacySegment: false,
-            contextPrompts: [...(openOptions.contextPrompts || []), runtimeSegments.brief(prefix)] };
+            contextPrompts: runtimeSegments.contextPrompts(openOptions.contextPrompts, prefix, legacyOptions.adapterId) };
           opened = await openNative(legacyOptions);
           record = opened.record;
           for (const binding of error.taskBindings || []) {

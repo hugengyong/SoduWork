@@ -20,7 +20,7 @@ test('completed goal conversations can switch while active goals remain protecte
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-agent-switch-')), app = { getPath: () => root };
-  const archives = new Map(), runs = new Map(), openings = [], requests = [];
+  const archives = new Map(), runs = new Map(), openings = [], requests = [], replies = new Map();
   let serial = 0, unavailable = '', busy = false, gate = null, strictMissing = false;
   let absence = { has: false, inflight: false, persisted: false, admissionDurable: true, bootId: 'test-boot' };
   const engine = {
@@ -67,7 +67,7 @@ function fixture(t) {
       const ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', input.dispatchId || 'chat:' + input.task.id + ':' + input.cli);
       runs.set(ref, { ref, cli: input.cli, taskId: input.task.id, workDir: input.ctx.workDir, state: 'done', title: input.task.title,
         items: [{ seq: 1, kind: 'user', text: input.ctx.conversationUserText },
-          { seq: 2, kind: 'say', text: 'Reply ' + input.cli }] });
+          { seq: 2, kind: 'say', text: replies.get(input.cli) || 'Reply ' + input.cli }] });
       return { ok: true, data: { ref } };
     }
     if (op === 'job.comment') { const run = runs.get(input.ref); run.items.push({ seq: run.items.length+1, kind: 'say', text: 'Followup' }); return { ok: true, data: { ok: true } }; }
@@ -87,7 +87,7 @@ function fixture(t) {
   })) }); }
   let current = bridge();
   t.after(async () => { await current.dispose(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }); });
-  return { app, root, openings, requests, runs, archives, get bridge() { return current; },
+  return { app, root, openings, requests, runs, archives, replies, get bridge() { return current; },
     restart: async () => { await current.dispose(); current = bridge(); },
     set strictMissing(v) { strictMissing = v; }, set absence(v) { absence = v; },
     set unavailable(v) { unavailable = v; }, set busy(v) { busy = v; }, set gate(v) { gate = v; } };
@@ -241,6 +241,62 @@ test('switching account runtimes uses the target catalog default without inherit
 const options = f => ({ app: f.app, ref: 'chat-switch', cwd: f.root, identity: identity('alice'), adapterId: 'pi', modelName: 'model-a',
   resolvePlugins: async ids => ({ items: ids.map(pluginId => ({ pluginId, name: 'Meeting', context: 'Fixture plugin context' })) }) });
 async function send(handle, text) { const sent = handle.submit(text, [], {}); assert.equal(sent.accepted, true); const done = await sent.completion; assert.equal(done.ok, true, JSON.stringify(done)); }
+
+test('fresh Runner turns declare the actual harness before the final output-language contract', async t => {
+  const f = fixture(t), opened = await f.bridge.open({ ...options(f), adapterId: 'dsh',
+    contextPrompts: ['Keep the business reporting rules.'] });
+  assert.equal(opened.ok, true, opened.reason);
+  await send(opened.session, 'Who are you?');
+  const dispatch = f.requests.find(row => row.op === 'job.dispatch').input;
+  assert.equal(dispatch.cli, 'dsh');
+  const contract = require('../main/conversation/agent-identity.cjs').contract('dsh');
+  assert.ok(dispatch.task.note.includes(contract));
+  assert.equal(dispatch.task.note.split('<soduwork-current-harness>').length - 1, 1);
+  assert.ok(dispatch.task.note.indexOf('Keep the business reporting rules.') < dispatch.task.note.indexOf(contract));
+  assert.ok(dispatch.task.note.endsWith(require('../main/conversation/agent-contract').outputLanguage(
+    require('../main/native-locale.cjs').getLocale())));
+});
+
+test('Harness2 to DSH keeps historical sources, creates a DSH segment and restores its current identity', async t => {
+  const f = fixture(t);
+  f.replies.set('harness2', 'I am the Google Harness² assistant.');
+  const opened = await f.bridge.open({ ...options(f), adapterId: 'harness2',
+    contextPrompts: ['Follow the workspace AGENTS.md.'] });
+  assert.equal(opened.ok, true, opened.reason);
+  const handle = opened.session, publicId = handle.sessionId;
+  await send(handle, 'Who are you?');
+  const oldDispatch = f.requests.find(row => row.op === 'job.dispatch').input;
+  const oldHistory = JSON.parse(JSON.stringify(handle.snapshot().messages));
+  assert.equal((await handle.selectAgent('dsh')).ok, true);
+  await send(handle, 'Which harness is active now?');
+  const dispatch = f.requests.filter(row => row.op === 'job.dispatch').at(-1).input;
+  assert.equal(dispatch.cli, 'dsh');
+  assert.notEqual(dispatch.dispatchId, oldDispatch.dispatchId);
+  assert.equal(dispatch.ctx.workDir, f.root);
+  assert.equal(handle.sessionId, publicId);
+  assert.deepEqual(handle.snapshot().messages.slice(0, oldHistory.length), oldHistory);
+  assert.ok(dispatch.task.note.includes('assistant [historical Agent: Google Harness²; runtime ID: harness2]: I am the Google Harness² assistant.'));
+  assert.ok(dispatch.task.note.includes('Current Agent: DeepSeek Harness (runtime ID: dsh).'));
+  assert.equal(dispatch.task.note.split('<soduwork-current-harness>').length - 1, 1);
+  assert.ok(dispatch.task.note.includes('"agentId":"dsh","harness":"DeepSeek Harness"'));
+  assert.equal(dispatch.task.note.includes('"agentId":"harness2","harness":"Google Harness²"'), false);
+  const manifest = segments.read(f.app, publicId);
+  assert.equal(manifest.active.adapterId, 'dsh');
+  assert.notEqual(manifest.active.sessionId, manifest.segments[0].sessionId);
+  await f.restart();
+  const restored = await f.bridge.open({ ...options(f), ref: 'cold-dsh', adapterId: 'harness2',
+    runtimeConversationId: publicId, contextPrompts: segments.contextPrompts(['Follow the workspace AGENTS.md.'],
+      { messages: [] }, 'harness2') });
+  assert.equal(restored.ok, true, restored.reason);
+  assert.equal(restored.session.adapterId, 'dsh');
+  await send(restored.session, 'Who are you after reopening?');
+  const continuation = f.requests.filter(row => row.op === 'job.comment').at(-1).input;
+  assert.ok(continuation.promptText.includes('"agentId":"dsh","harness":"DeepSeek Harness"'));
+  assert.equal(continuation.promptText.split('<soduwork-current-harness>').length - 1, 1);
+  assert.equal(continuation.promptText.includes('Current Agent: Google Harness²'), false);
+  assert.ok(continuation.promptText.includes('Current Agent: DeepSeek Harness'));
+  assert.ok(continuation.promptText.includes('Follow the workspace AGENTS.md.'));
+});
 
 async function waitIdle(handle) {
   for (let n = 0; n < 200; n++) {

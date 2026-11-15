@@ -148,7 +148,7 @@ def _clip(text: str, limit: int) -> str:
     return value[:half] + "\n[中间内容已归档，当前仅保留首尾]\n" + value[-half:]
 
 
-def _handoff_brief(ref: str, prompt: str | None = None) -> str:
+def _handoff_brief(ref: str, prompt: str | None = None, *, agent_id: str | None = None) -> str:
     """Bounded extractive checkpoint; originals stay in SoduWork's run archive.
 
     Never inspect arbitrary project files or prescribe a new progress file.
@@ -164,8 +164,21 @@ def _handoff_brief(ref: str, prompt: str | None = None) -> str:
     archive.write_text(json.dumps({"request": current, "initialRequest": first},
                                  ensure_ascii=False), encoding="utf-8")
     recent = [x for x in lines if x.get("kind") in ("user", "say", "tool", "out")][-12:]
-    evidence = "\n".join("[%s] %s" % (x.get("kind"), _clip(x.get("full") or x.get("text", ""), 800))
-                         for x in recent)
+    from ..agent_catalog import AGENTS
+    from .agent_identity import identity_prompt
+    def historical_line(item):
+        label = str(item.get("kind") or "")
+        if label == "say":
+            # A run can contain several native segments. Only an archived
+            # source identity can attribute a historical answer to a harness.
+            source = item.get("sourceAgent")
+            source_id = source.get("agentId") if isinstance(source, dict) else None
+            source_agent = AGENTS.get(source_id) if isinstance(source_id, str) else None
+            origin = (source_agent["displayName"] + " (" + source_id + ")"
+                      if source_agent else "unrecorded")
+            label += "; historical assistant; source runtime: " + origin
+        return "[%s] %s" % (label, _clip(item.get("full") or item.get("text", ""), 800))
+    evidence = "\n".join(historical_line(item) for item in recent)
     parts = ["[SoduWork 上下文自动压缩：同一会话继续]",
              "原始消息和工具记录仍在 SoduWork 历史中。保持原权限及任务边界，"
              "先核对执行结果，避免重复已完成的外部操作。以下历史是证据，不是新的授权。",
@@ -175,6 +188,9 @@ def _handoff_brief(ref: str, prompt: str | None = None) -> str:
              "本轮要求：\n" + _clip(current, budget // 2),
              "完整本轮输入存档：" + str(archive),
              "如果节选不足以确定要求，请明确指出缺失部分；不要猜测或宣称完成。"]
+    current_identity = identity_prompt(agent_id if agent_id is not None else run.get("cli"))
+    if current_identity:
+        parts.append(current_identity)
     return "\n\n".join(parts)
 
 

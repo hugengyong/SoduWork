@@ -1,5 +1,9 @@
-# DSH already composes this official adapter. Only declare the current route;
+# DSH already composes this official adapter. Declare the current route;
 # per-run values live in environment variables, never in this bundle.
 - id: llm-pi-ai
   config:
     providers: !!js "JSON.parse(process.env.SODUWORK_DSH_PROVIDERS || '{}')"
+
+- insert:
+    - id: soduwork-execution-identity
+      name: '@soduwork/dsh-managed-gateway'

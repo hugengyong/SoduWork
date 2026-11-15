@@ -9,16 +9,19 @@ import json
 from pathlib import Path
 
 from . import context_window, runtime_images
+from .agent_identity import identity_prompt
 from .runtime_defaults import DEFAULT_OUTPUT
 
 PROVIDER = "soduwork"
 KEY_ENV = "SODUWORK_API_KEY"
 PROFILE_ENV = "SODUWORK_DSH_PROVIDERS"
+IDENTITY_ENV = "SODUWORK_EXECUTION_IDENTITY"
 
 
 def bundle_args() -> list[str]:
     bundle = Path(__file__).with_name("dsh_gateway_bundle")
-    if not (bundle / "cordis.patch.yml").is_file() or not (bundle / "package.json").is_file():
+    if not all((bundle / name).is_file()
+               for name in ("cordis.patch.yml", "package.json", "identity.mjs")):
         raise RuntimeError("DeepSeek Harness managed gateway adapter is missing; update SoduWork")
     return ["--bundle", str(bundle)]
 
@@ -53,5 +56,6 @@ def inject_env(env: dict, llm: dict) -> None:
     else:
         env.pop(KEY_ENV, None)
     env.update({PROFILE_ENV: json.dumps({PROVIDER: profile}, ensure_ascii=False),
+                IDENTITY_ENV: identity_prompt("dsh"),
                 "DSH_PROVIDER": PROVIDER, "DSH_MODEL": model, "DSH_ACP_MODELS": model,
                 "DSH_MAX_TOKENS": str(output_limit)})

@@ -122,6 +122,41 @@ class RunnerTurnSelectionTests(unittest.TestCase):
         self.assertEqual(sum(bool(r and r.get("ok")) for r in results), 1, results)
         self.assertEqual(local_stream._spawn.call_count, 1)
 
+    def test_switch_replaces_current_identity_without_losing_historical_claims(self):
+        for previous, target, expected_name in (
+                ("harness2", "dsh", "DeepSeek Harness"),
+                ("dsh", "harness2", "Google Harness²")):
+            with self.subTest(previous=previous, target=target):
+                self.row.update(cli=previous, cliSid="previous-native-session", state="done",
+                                queue=[], contextSegments=[], cfg={})
+                self.row["lines"] = [
+                    {"kind": "user", "text": "Keep result.txt and continue the same task"},
+                    {"kind": "say", "text": "I am the Google Harness² assistant.",
+                     "sourceAgent": {"agentId": "harness2", "displayName": "untrusted display name"}},
+                    {"kind": "say", "text": "Earlier result.txt was verified"}]
+                original_lines = json.loads(json.dumps(self.row["lines"]))
+                cfg = {**self.cfg(), "local_cli": target,
+                       "_executionSelection": {"agentId": target, "modelName": "b"}}
+                local_stream._spawn.reset_mock()
+                with patch.dict(local_base._PROFILES[target], {
+                        "bin": lambda: sys.executable, "runtime_issue": lambda: ""}):
+                    result = switching.resume(self.ref, "你是谁", cfg)
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(self.row["cli"], target)
+                self.assertNotEqual(self.row["cliSid"], "previous-native-session")
+                prompt = local_stream._spawn.call_args.args[2]
+                identity = prompt.rsplit("<soduwork-current-harness>", 1)[1].split(
+                    "</soduwork-current-harness>", 1)[0]
+                facts = next(json.loads(line) for line in identity.splitlines() if line.startswith("{"))
+                self.assertEqual(facts, {"agentId": target, "harness": expected_name})
+                self.assertIn("I am the Google Harness² assistant.", prompt)
+                self.assertIn("result.txt", prompt)
+                self.assertIn("historical assistant", prompt)
+                self.assertIn("source runtime: Google Harness² (harness2)", prompt)
+                self.assertNotIn("untrusted display name", prompt)
+                self.assertEqual(self.row["lines"][:len(original_lines)], original_lines)
+                self.assertEqual(self.row["ws"], str(self.path))
+
 
 if __name__ == "__main__":
     unittest.main()
