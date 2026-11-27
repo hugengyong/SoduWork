@@ -59,3 +59,71 @@ test('Windows npm survives electron-builder root node_modules filtering', async 
   await copyFiles([new FileMatcher(path.join(temp, mapping.from), output, value => value, mapping.filter)]);
   assert.equal(fs.readFileSync(path.join(output, 'npm/bin/npm-cli.js'), 'utf8'), 'npm entry');
 });
+
+test('each supported installer resolves its own pinned Armonel from the final resources path', async t => {
+  const { selectRelease, noticeNames, bundledExecutable } = require('../main/armonel-runtime.cjs');
+  const { prepare } = require('../scripts/prepare-armonel-runtime.cjs');
+  const pkg = require('../package.json');
+  const catalog = require('../../hub-backend/app/agent_catalog.json');
+  const agent = catalog.agents.find(item => item.id === 'armonel');
+  assert.equal(agent.install.installer, 'bundled');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-armonel-gate-'));
+  t.after(() => { assert.equal(path.dirname(temp), os.tmpdir()); fs.rmSync(temp, { recursive: true, force: true }); });
+  const { FileMatcher, copyFiles } = require('app-builder-lib/out/fileMatcher');
+  for (const [platform, arch, section] of [
+    ['darwin', 'arm64', 'mac'], ['darwin', 'x64', 'mac'], ['linux', 'x64', 'linux'], ['win32', 'x64', 'win'],
+  ]) {
+    const release = selectRelease(platform, arch);
+    assert.equal(agent.install.version, release.version);
+    assert.equal(release.name, 'armonel-' + platform + '-' + arch);
+    const mapping = pkg.build[section].extraResources.find(item => item.to === 'armonel');
+    const dir = path.resolve(temp, mapping.from.replace('${arch}', arch));
+    const resources = path.join(temp, release.target, platform === 'darwin' ? 'SoduWork.app/Contents/Resources' : 'resources');
+    fs.mkdirSync(dir, { recursive: true });
+    const names = [release.executable, ...noticeNames];
+    assert.deepEqual(mapping.filter, names);
+    for (const name of names) fs.writeFileSync(path.join(dir, name), release.target);
+    assert.equal(bundledExecutable({ isPackaged: false, getAppPath: () => temp }, null, platform, arch), path.join(dir, release.executable));
+    assert.equal(bundledExecutable({ isPackaged: true }, resources, platform, arch), null);
+    await copyFiles([new FileMatcher(dir, path.join(resources, mapping.to), value => value, mapping.filter)]);
+    const resolved = bundledExecutable({ isPackaged: true }, resources, platform, arch);
+    assert.equal(fs.readFileSync(resolved, 'utf8'), release.target);
+    const required = requiredFiles(readManifest(root), platform, arch);
+    for (const name of names) assert.ok(required.includes('armonel/' + name));
+  }
+  const archive = path.join(temp, 'wrong.tgz');
+  fs.writeFileSync(archive, 'incorrect archive');
+  await assert.rejects(prepare({ root: temp, platform: 'darwin', arch: 'arm64', env: {} }), /Missing armonel-darwin-arm64/);
+  await assert.rejects(prepare({ root: temp, platform: 'win32', arch: 'x64',
+    env: { SODUWORK_ARMONEL_PACKAGE: archive } }), /failed SHA-256/);
+  assert.equal(bundledExecutable({ isPackaged: true }, temp, 'win32', 'arm64'), null);
+});
+
+test('private registry uses the target archive, keeps the job token on GitLab and rejects corrupt downloads', async t => {
+  const { EventEmitter } = require('node:events');
+  const { Readable } = require('node:stream');
+  const { prepare } = require('../scripts/prepare-armonel-runtime.cjs');
+  const { selectRelease } = require('../main/armonel-runtime.cjs');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-armonel-download-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const calls = [];
+  const storage = 'https://storage.example.test/download';
+  t.mock.method(require('node:https'), 'get', (url, options, respond) => {
+    calls.push([url, options.headers['JOB-TOKEN']]);
+    const response = Readable.from([Buffer.from('unverified contents')]);
+    response.statusCode = url === storage ? 200 : 302;
+    response.headers = url === storage ? {} : { location: storage };
+    queueMicrotask(() => respond(response));
+    return Object.assign(new EventEmitter(), { setTimeout() {} });
+  });
+  const api = 'https://gitlab.example.test/api/v4';
+  const env = { CI_API_V4_URL: api, CI_JOB_TOKEN: 'fixture-token', SODUWORK_ARMONEL_PROJECT_ID: '12' };
+  await assert.rejects(prepare({ root: temp, platform: 'darwin', arch: 'arm64', env }), /SHA-256 mismatch/);
+  const release = selectRelease('darwin', 'arm64');
+  assert.deepEqual(calls, [
+    [`${api}/projects/12/packages/generic/armonel-npm/${release.version}/${release.file}`, 'fixture-token'],
+    [storage, undefined],
+  ]);
+  assert.deepEqual(fs.readdirSync(path.join(temp, '.runtime-cache', 'armonel')), []);
+  assert.equal(fs.existsSync(path.join(temp, '.runtime', 'armonel')), false);
+});

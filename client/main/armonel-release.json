@@ -1,0 +1,43 @@
+{
+  "version": "0.0.10",
+  "packages": [
+    {
+      "name": "armonel-darwin-arm64",
+      "file": "armonel-darwin-arm64-0.0.10.tgz",
+      "bytes": 9033265,
+      "sha256": "25c0b67ae245e08d2401b6eea988184072e81211713d97ecd410e31b9fbf6486",
+      "target": "darwin-arm64",
+      "binary_sha256": "706eae2d5723c3a63bc938c42d5f7be86742ef86e4183880065d3208213e719e"
+    },
+    {
+      "name": "armonel-darwin-x64",
+      "file": "armonel-darwin-x64-0.0.10.tgz",
+      "bytes": 9266329,
+      "sha256": "cbdb4618fa582ee0c9a799e300ac8fa41312845f75bbca899294dc348b71c205",
+      "target": "darwin-x64",
+      "binary_sha256": "806b25141abd81a7f8f8671f4ac860bdfe428a8baed45b9204a5f606336e5809"
+    },
+    {
+      "name": "armonel-linux-x64",
+      "file": "armonel-linux-x64-0.0.10.tgz",
+      "bytes": 7991537,
+      "sha256": "887aeaf7b30eb8e816d15b41a73af10bcf8e6b968857a76cf3f587922f627ea0",
+      "target": "linux-x64",
+      "binary_sha256": "2632b5ec2b45848eb0584e38b39ed97455cefd803d412273a3085ffd5f2598a5"
+    },
+    {
+      "name": "armonel-win32-x64",
+      "file": "armonel-win32-x64-0.0.10.tgz",
+      "bytes": 8207242,
+      "sha256": "f2fc51fe4a7a0e5ff56598c031605f27820cc30d929d2f87ff45a469929f607d",
+      "target": "win32-x64",
+      "binary_sha256": "0a75d2572d3c3cb49342662b0b4efb7e851c142e2bec0836a57237d196134612"
+    },
+    {
+      "name": "armonel",
+      "file": "armonel-0.0.10.tgz",
+      "bytes": 2174,
+      "sha256": "c257c1c74befd4e1653b7b61d04bbf2a7e6877d3c49b052750fe27b307f983cc"
+    }
+  ]
+}

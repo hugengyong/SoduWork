@@ -87,6 +87,14 @@ npm start
 
 在 `client/` 运行 `npm test` 和 `npm run check:layout`。Electron 端到端检查见本目录的 `e2e/`，按脚本选择所需环境。`dist/`、`.runtime/` 和生成的 `runner/` 文件是产物，不要提交或复制旧版二进制替代源码。
 
+### 在桌面安装包中内置 Armonel
+
+桌面构建按目标架构选择 Armonel 0.0.10，支持 Apple Silicon、Intel Mac、Windows x64 和 Linux x64。使用 GitLab 时，将 `SODUWORK_ARMONEL_PROJECT_ID` 一次性设为托管通用包 `armonel-npm` 的项目数字 ID，并在该项目授权桌面工程的 CI Job Token 读取包。也可以用 `SODUWORK_ARMONEL_PACKAGE_BASE_URL` 指定 HTTPS 镜像，按 `<镜像地址>/<版本>/<文件名>` 提供归档。已校验的下载会缓存复用。
+
+离线构建时，将各目标平台的归档按原文件名放入 `client/.runtime-cache/armonel/`。同一台 Mac 构建两种架构时，放入两个 Darwin 包即可。构建单一架构或从源码启动时，也可用 `SODUWORK_ARMONEL_PACKAGE` 指向对应归档。沿用原有桌面构建命令，脚本对照[上游发布清单](../client/main/armonel-release.json)核验归档和可执行文件，随包携带程序及两个许可文件。macOS 构建会从 `SoduWork.app/Contents/Resources/armonel/armonel` 验证一轮离线 ACP 对话。Apple Silicon 构建机验证 Intel 包时需要 Rosetta。用户安装 SoduWork 后即可选择 Armonel。
+
+模型将单次输出全部用于思考时，Armonel 会按模型已声明的能力调整恢复请求。对于缺少能力声明的网关别名，运维人员可以先验证 `reasoning_effort=none` 能返回正文或完整工具调用，再把端点和模型名写入 `$SODUWORK_DATA_ROOT/.armonel/recovery-profiles.json`，例如 `{"https://gateway.example/v1":{"deployment":"openai"}}`。Runner 在启动 Armonel 时读取，开关只用于恢复请求。模型的显式限制优先。
+
 ## 技能和插件
 
 `skills/<name>/SKILL.md` 描述内置技能，包括项目自有指南和已核对来源的上游开发技能，见[技能目录](../skills/README.zh-CN.md)；`hub-backend/plugins/*.json` 提供通用插件与工作流。遵循[插件协议](plugin-authoring.md)保持版本不可变、权限最小化及导入审查。新增内置技能还需要显式更新 `tools/distribution/PUBLIC-SOURCE.json` 的发布范围，并保留原始许可和来源说明。

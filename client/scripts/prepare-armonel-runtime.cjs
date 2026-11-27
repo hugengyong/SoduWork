@@ -1,0 +1,126 @@
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const https = require('node:https');
+const { spawnSync } = require('node:child_process');
+const { selectRelease, noticeNames } = require('../main/armonel-runtime.cjs');
+const { replaceFileSync } = require('../main/verified-file-replace.cjs');
+const { extractArchive, ensureArchive, downloadFile } = require('./prepare-node-runtime.cjs');
+
+const sha256 = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+function fileStat(file) {
+  const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+  return stat?.isFile() && stat.size > 0;
+}
+
+function verified(file, digest) {
+  return fileStat(file) && sha256(file) === digest;
+}
+
+function checkArchive(archive, release, members) {
+  if (!verified(archive, release.sha256)) {
+    throw Error(`Armonel archive failed SHA-256 verification: ${release.file}`);
+  }
+  const tar = process.platform === 'win32'
+    ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar';
+  const listed = spawnSync(tar, ['-tf', archive], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+  const names = (listed.stdout || '').trim().split(/\r?\n/).sort();
+  if (listed.status !== 0 || names.length !== members.length || names.some((name, index) => name !== members[index])) {
+    throw Error(`Unexpected archive members in ${release.file}`);
+  }
+}
+
+function canExecute(platform, arch) {
+  return platform === process.platform && (arch === process.arch ||
+    (platform === 'darwin' && process.arch === 'arm64' && arch === 'x64'));
+}
+
+function verifyExecutable(file, release) {
+  if (process.platform === 'darwin') {
+    const cpu = release.target === 'darwin-arm64' ? 'arm64' : 'x86_64';
+    const check = spawnSync('/usr/bin/lipo', ['-archs', file], { encoding: 'utf8', timeout: 15000 });
+    if (check.status !== 0 || !check.stdout.trim().split(/\s+/).includes(cpu)) {
+      throw Error(`Packaged Armonel does not contain the required macOS architecture: ${cpu}`);
+    }
+  }
+  const env = process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot } : {};
+  const output = spawnSync(file, ['--version'], { encoding: 'utf8', windowsHide: true, timeout: 15000,
+    cwd: path.dirname(file), env });
+  if (output.status !== 0 || output.stdout?.trim() !== `armonel ${release.version}`) {
+    throw Error(`Bundled ${release.target} Armonel must execute and report version ${release.version}: ${output.error?.message || output.stderr || output.status}`);
+  }
+}
+
+async function resolveArchive(root, release, env) {
+  const supplied = env.SODUWORK_ARMONEL_PACKAGE?.trim();
+  if (supplied) return path.resolve(supplied);
+  const cache = path.join(root, '.runtime-cache', 'armonel');
+  const named = path.join(cache, release.file);
+  if (fs.existsSync(named)) return named;
+  const cached = path.join(cache, release.sha256);
+  if (verified(cached, release.sha256)) return cached;
+  const project = env.SODUWORK_ARMONEL_PROJECT_ID?.trim();
+  const api = env.CI_API_V4_URL?.replace(/\/+$/, '');
+  let base = env.SODUWORK_ARMONEL_PACKAGE_BASE_URL?.trim();
+  if (!base && api && /^\d+$/.test(project || '')) base = api + '/projects/' + project + '/packages/generic/armonel-npm';
+  if (!base) throw Error(`Missing ${release.file}. Supply SODUWORK_ARMONEL_PACKAGE, cache it under ${cache}, or configure the build package registry.`);
+  const url = new URL(base.replace(/\/+$/, '') + '/' + release.version + '/' + release.file);
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw Error('Invalid Armonel registry URL');
+  // Use the job token only for this GitLab API. Storage redirects receive no credentials.
+  const get = (current, options, callback) => {
+    if (env.CI_JOB_TOKEN && api && url.href.startsWith(api + '/') && String(current) === url.href) {
+      options.headers['JOB-TOKEN'] = env.CI_JOB_TOKEN;
+    }
+    return https.get(current, options, callback);
+  };
+  return ensureArchive({ sha256: release.sha256, urls: [url.href] }, cache, {
+    download: (source, target) => downloadFile(source, target, { get }),
+  });
+}
+
+async function prepare({ root = path.resolve(__dirname, '..'), platform = process.platform, arch = process.arch,
+  env = process.env } = {}) {
+  const release = selectRelease(platform, arch);
+  if (!release) return null;
+  const archive = await resolveArchive(root, release, env);
+  const runtime = path.join(root, '.runtime', 'armonel');
+  const output = path.join(runtime, release.target);
+  const members = ['package/package.json', `package/bin/${release.executable}`,
+    ...noticeNames.map(name => 'package/' + name)].sort();
+  fs.mkdirSync(runtime, { recursive: true });
+  const temporary = fs.mkdtempSync(path.join(runtime, '.stage-'));
+  try {
+    const input = path.join(temporary, release.file);
+    fs.copyFileSync(archive, input, fs.constants.COPYFILE_EXCL);
+    checkArchive(input, release, members);
+    extractArchive(input, temporary);
+    if (!members.every(name => fileStat(path.join(temporary, name)))) throw Error('Invalid Armonel payload files');
+    const pkg = JSON.parse(fs.readFileSync(path.join(temporary, 'package/package.json'), 'utf8'));
+    if (pkg.name !== release.name || pkg.version !== release.version || pkg.license !== 'MIT' ||
+        pkg.os?.join(',') !== platform || pkg.cpu?.join(',') !== arch) throw Error('Unexpected Armonel package metadata');
+    const executable = path.join(temporary, 'package', 'bin', release.executable);
+    if (!verified(executable, release.binary_sha256)) throw Error('Armonel executable failed SHA-256 verification');
+    if (canExecute(platform, arch)) verifyExecutable(executable, release);
+    fs.mkdirSync(output, { recursive: true });
+    for (const name of noticeNames) {
+      const source = path.join(temporary, 'package', name);
+      if (!verified(path.join(output, name), sha256(source))) replaceFileSync(source, path.join(output, name));
+    }
+    const target = path.join(output, release.executable);
+    if (!verified(target, release.binary_sha256)) replaceFileSync(executable, target);
+    if (process.platform !== 'win32' && platform !== 'win32') fs.chmodSync(target, 0o755);
+    console.log(`[SoduWork Armonel runtime] ${release.version} verified and staged for ${release.target}`);
+    return output;
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
+if (require.main === module) {
+  prepare().catch(error => { console.error(error.message); process.exitCode = 1; });
+}
+
+module.exports = { prepare, verifyExecutable, canExecute };
