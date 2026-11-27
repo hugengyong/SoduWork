@@ -203,7 +203,7 @@ def main():
     report['installedInputsUnchanged'] = before == fixture_module.fingerprint(files)
     report['node'] = subprocess.check_output([str(args.node), '--version'], text=True).strip()
     report['platform'] = sys.platform
-    report['adapter'] = json.loads((args.adapter_entry.parent.parent / 'package.json').read_text())['version']
+    report['adapter'] = json.loads((args.adapter_entry.parent.parent / 'package.json').read_text(encoding='utf-8'))['version']
     (output / 'summary.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({key: report.get(key) for key in ('ok', 'error', 'processCodes', 'taskGoal',
                                                     'outputRecoveries', 'installedInputsUnchanged', 'calls')}))
