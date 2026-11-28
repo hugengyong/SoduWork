@@ -598,10 +598,11 @@ class AcpErrorMessagesTests(unittest.TestCase):
         agent.close.assert_called_once_with()
 
     def test_armonel_reports_the_native_summary_stop_without_replaying_the_prompt(self):
-        prefix = 'Task stopped: compaction_failed. Context summary failed before replacing history: '
+        prefix = 'Task stopped: compaction_failed. '
         for detail, expected in (
-            ('Summary was truncated again on a smaller segment; original history was preserved',
+            ('Context summary failed before replacing history: Summary was truncated again on a smaller segment; original history was preserved',
              'context_summary_truncated'),
+            ('Context summary failed before replacing history: Unknown internal detail', 'context_summary_failed'),
             ('Unknown internal detail', 'context_summary_failed'),
         ):
             with self.subTest(reason=expected), TemporaryDirectory() as folder:
@@ -616,6 +617,41 @@ class AcpErrorMessagesTests(unittest.TestCase):
                 self.assertEqual([call.args[0] for call in request.call_args_list],
                                  ['initialize', 'session/new', 'session/prompt'])
                 self.assertEqual(emit.call_args.args[0], {'type': 'turn_stopped', 'reason': expected})
+
+    def test_context_contract_is_an_armonel_prompt_stop_and_never_exposes_detail(self):
+        internal = {'code': -32603, 'message': 'Task stopped: context_contract. private diagnostic'}
+        meta = {'armonel/stopReason': 'context_contract'}
+        for agent, payload, outcome in (
+            ('armonel', {'error': internal}, 2),
+            ('armonel', {'result': {'stopReason': 'refusal', '_meta': meta}}, 2),
+            ('armonel', {'result': {'stopReason': 'end_turn', '_meta': meta}}, 2),
+            ('armonel', {'result': {'stopReason': 'context_contract'}}, 2),
+            ('kimi', {'result': {'stopReason': 'end_turn', '_meta': meta}}, 0),
+            ('kimi', {'error': internal}, None),
+            ('armonel', {'error': {**internal, 'code': -32602}}, None),
+            ('armonel', {'error': {**internal, 'message': 'Unknown failure: ' + internal['message']}}, None),
+        ):
+            with self.subTest(agent=agent, payload=payload), TemporaryDirectory() as folder:
+                acp = bridge.AcpBridge([], folder, agent, 'workspace')
+                def request(method, _params):
+                    if method == 'initialize':
+                        return {'protocolVersion': 1, 'agentInfo': {'name': agent},
+                                'agentCapabilities': {'loadSession': True}}
+                    if method == 'session/new':
+                        return {'sessionId': 'fixture-session'}
+                    self.assertEqual(method, 'session/prompt')
+                    return acp._unwrap(payload)
+                with patch.object(acp, 'start'), patch.object(acp.access, 'apply'), \
+                        patch.object(acp, 'request', side_effect=request) as calls, patch.object(bridge, '_emit') as emit:
+                    if outcome is None:
+                        with self.assertRaises(bridge.BridgeError):
+                            acp.run('synthetic')
+                    else:
+                        self.assertEqual(acp.run('synthetic'), outcome)
+                self.assertEqual(sum(call.args[0] == 'session/prompt' for call in calls.call_args_list), 1)
+                stops = [call.args[0] for call in emit.call_args_list if call.args[0].get('type') == 'turn_stopped']
+                self.assertEqual(stops, [{'type': 'turn_stopped', 'reason': 'context_contract'}] if outcome == 2 else [])
+                self.assertNotIn('private diagnostic', str(emit.call_args_list))
 
     def test_dsh_output_limit_entry_returns_two_without_an_adapter_error(self):
         with TemporaryDirectory() as folder:

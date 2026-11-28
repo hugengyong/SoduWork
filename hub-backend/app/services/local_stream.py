@@ -1224,6 +1224,9 @@ def _finish(ref: str, code: int, term: dict, hard_err: str) -> None:
                 run["error"] = (local_turn_outcome.ARMONEL_SUMMARY_TRUNCATED
                                 if term["contextSummaryFailed"] == "context_summary_truncated" else
                                 local_turn_outcome.ARMONEL_SUMMARY_FAILED)
+            elif code == 2 and term.get("contextContractFailed") and not term.get("isError") and not overflow:
+                run["failureKind"] = "execution_incomplete"
+                run["error"] = local_turn_outcome.ARMONEL_CONTEXT_CONTRACT
             elif request_limited:
                 run["failureKind"] = "execution_incomplete"
                 run["error"] = local_turn_outcome.ARMONEL_REQUEST_LIMIT

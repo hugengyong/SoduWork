@@ -367,9 +367,10 @@ class TurnOutcomeTests(unittest.TestCase):
                 self.assertEqual(self.run["queue"], ["next user prompt"])
                 self.assertEqual(runner_usage_receipts.public_snapshot(page, self.run)["error"], message)
 
-    def test_local_armonel_summary_failure_keeps_history_and_safe_diagnosis(self):
+    def test_local_armonel_context_stops_keep_the_safe_diagnosis_in_the_snapshot(self):
         for reason, diagnosis in (("context_summary_failed", local_turn_outcome.ARMONEL_SUMMARY_FAILED),
-                                  ("context_summary_truncated", local_turn_outcome.ARMONEL_SUMMARY_TRUNCATED)):
+                                  ("context_summary_truncated", local_turn_outcome.ARMONEL_SUMMARY_TRUNCATED),
+                                  ("context_contract", local_turn_outcome.ARMONEL_CONTEXT_CONTRACT)):
             with self.subTest(reason=reason):
                 self.run.update(state="running", cli="armonel", cliSid="saved-session", modelLocalOnly=True, queue=[])
                 terminal = {}

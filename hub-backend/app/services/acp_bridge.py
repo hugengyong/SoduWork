@@ -956,16 +956,22 @@ class AcpBridge:
                     self._flush_message()
                     _emit({"type": "turn_stopped", "reason": "cancelled"})
                     return 0
-                # Older Armonel versions report this specific stop through
-                # JSON-RPC internal_error. Emit only a stable public reason.
-                prefix = "Task stopped: compaction_failed. Context summary failed before replacing history: "
-                if self.agent_name != "armonel" or not str(exc).startswith(prefix):
+                # Armonel rc.4 reports these native stops as JSON-RPC errors.
+                # Forward only their stable reason, never the appended detail.
+                if self.agent_name != "armonel":
+                    raise
+                message = str(exc)
+                prefix = "Task stopped: compaction_failed. "
+                if exc.code == -32603 and message.startswith("Task stopped: context_contract."):
+                    reason = "context_contract"
+                elif message.startswith(prefix):
+                    detail = message[len(prefix):].removeprefix("Context summary failed before replacing history: ")
+                    reason = ("context_summary_truncated" if detail.startswith(
+                        "Summary was truncated again on a smaller segment; original history was preserved")
+                        else "context_summary_failed")
+                else:
                     raise
                 self._flush_message()
-                detail = str(exc)[len(prefix):]
-                reason = ("context_summary_truncated" if detail.startswith(
-                    "Summary was truncated again on a smaller segment; original history was preserved")
-                    else "context_summary_failed")
                 _emit({"type": "turn_stopped", "reason": reason})
                 return 2
             finally:
@@ -1025,6 +1031,11 @@ class AcpBridge:
         if self.transition.stop_requested:
             _emit({"type": "turn_stopped", "reason": "cancelled"})
             return 0
+        meta = result.get("_meta")
+        if self.agent_name == "armonel" and (reason == "context_contract" or
+                isinstance(meta, dict) and meta.get("armonel/stopReason") == "context_contract"):
+            _emit({"type": "turn_stopped", "reason": "context_contract"})
+            return 2
         if reason in ("", "end_turn"):
             if recovery_without_result:
                 # Preserve the native end_turn receipt. It did not resolve the
@@ -1032,7 +1043,6 @@ class AcpBridge:
                 _emit({"type": "turn_stopped", "reason": "output_recovery_no_progress"})
                 return 2
             return 0
-        meta = result.get("_meta")
         if (self.agent_name == "armonel" and reason == "cancelled" and isinstance(meta, dict)
                 and meta.get("armonel/stopReason") == "tool_approval_timeout"):
             _emit({"type": "turn_stopped", "reason": "tool_approval_timeout"})

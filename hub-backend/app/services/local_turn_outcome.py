@@ -7,6 +7,7 @@ REASONING_OUTPUT_LIMIT = "模型在本次输出额度内只返回了思考内容
 OUTPUT_RECOVERY_NO_PROGRESS = "输出截断后，续跑没有返回新的答复或完成任何工具调用。本轮仍未完成，已有进度已保留。"
 ARMONEL_SUMMARY_FAILED = "本轮未能生成可用的上下文摘要，任务已暂停。原会话历史已保留。"
 ARMONEL_SUMMARY_TRUNCATED = "Armonel 缩小分段后，摘要仍达到输出上限。原会话和已完成的操作已保留。使用相同配置继续可能再次停在摘要阶段。"
+ARMONEL_CONTEXT_CONTRACT = "Armonel 底座的上下文校验未通过，任务已暂停。"
 DSH_CONTEXT_COMPACTED = "DeepSeek Harness 已压缩原会话的上下文，本轮请求没有重新执行。可以发送「继续」接续。"
 DSH_CONTEXT_COMPACTION_FAILED = "DeepSeek Harness 未能压缩原会话。原历史和工作区已保留，请检查后再继续。"
 
@@ -18,7 +19,7 @@ TOOL_APPROVAL_TIMEOUT = "工具审批已超时，待审批的操作没有执行�
 RECOVERY_NOTE = "（SoduWork 自动恢复）模型输出被截断，正从同一会话保留进度续跑当前节点；最多自动恢复一次，不跳过审批或验收。"
 
 PUBLIC_INCOMPLETE_REASONS = (TRUNCATED, ARMONEL_TOKEN_LIMIT, ARMONEL_REQUEST_LIMIT,
-                             ARMONEL_SUMMARY_FAILED, ARMONEL_SUMMARY_TRUNCATED,
+                             ARMONEL_SUMMARY_FAILED, ARMONEL_SUMMARY_TRUNCATED, ARMONEL_CONTEXT_CONTRACT,
                              REASONING_OUTPUT_LIMIT, OUTPUT_RECOVERY_NO_PROGRESS,
                              DSH_CONTEXT_COMPACTED, DSH_CONTEXT_COMPACTION_FAILED)
 
@@ -47,6 +48,8 @@ def observe(cli: str, event: dict, terminal: dict) -> None:
             terminal["requestLimitReached"] = True
         elif cli == "armonel" and reason in {"context_summary_failed", "context_summary_truncated"}:
             terminal["contextSummaryFailed"] = reason
+        elif cli == "armonel" and reason == "context_contract":
+            terminal["contextContractFailed"] = True
         return
     if cli in {"pi", "opencode", "dsh", "kimi", "qwen", "armonel"} and event.get("error"):
         # A protocol/runtime failure after an attempted continuation is stronger
@@ -56,6 +59,7 @@ def observe(cli: str, event: dict, terminal: dict) -> None:
         terminal.pop("reasoningOutputLimit", None)
         terminal.pop("outputRecoveryNoProgress", None)
         terminal.pop("contextSummaryFailed", None)
+        terminal.pop("contextContractFailed", None)
         terminal.pop("dshContextRecovery", None)
         # A transport error takes ownership from an earlier retryable Pi model
         # error; a later native message must not clear the transport diagnosis.
