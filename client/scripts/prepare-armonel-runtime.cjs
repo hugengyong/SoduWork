@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const https = require('node:https');
 const { spawnSync } = require('node:child_process');
+const manifest = require('../main/armonel-release.json');
 const { selectRelease, noticeNames } = require('../main/armonel-runtime.cjs');
 const { replaceFileSync } = require('../main/verified-file-replace.cjs');
 const { extractArchive, ensureArchive, downloadFile } = require('./prepare-node-runtime.cjs');
@@ -54,24 +55,35 @@ function verifyExecutable(file, release) {
   }
 }
 
-async function resolveArchive(root, release, env) {
-  const supplied = env.SODUWORK_ARMONEL_PACKAGE?.trim();
-  if (supplied) return path.resolve(supplied);
+function bundledArchive(root, release) {
+  return path.join(root, 'runtime-packages', 'armonel', release.version, release.file);
+}
+
+async function cachedOrRemoteArchive(root, release, env, allowMissing = false) {
   const cache = path.join(root, '.runtime-cache', 'armonel');
   const named = path.join(cache, release.file);
-  if (fs.existsSync(named)) return named;
+  if (verified(named, release.sha256)) return named;
   const cached = path.join(cache, release.sha256);
   if (verified(cached, release.sha256)) return cached;
   const project = env.SODUWORK_ARMONEL_PROJECT_ID?.trim();
   const api = env.CI_API_V4_URL?.replace(/\/+$/, '');
-  let base = env.SODUWORK_ARMONEL_PACKAGE_BASE_URL?.trim();
+  const npmRegistry = env.SODUWORK_ARMONEL_NPM_REGISTRY?.trim();
+  let base = npmRegistry || env.SODUWORK_ARMONEL_PACKAGE_BASE_URL?.trim();
   if (!base && api && /^\d+$/.test(project || '')) base = api + '/projects/' + project + '/packages/generic/armonel-npm';
-  if (!base) throw Error(`Missing ${release.file}. Supply SODUWORK_ARMONEL_PACKAGE, cache it under ${cache}, or configure the build package registry.`);
-  const url = new URL(base.replace(/\/+$/, '') + '/' + release.version + '/' + release.file);
+  if (!base) {
+    if ([named, cached].some(file => fs.lstatSync(file, { throwIfNoEntry: false }))) {
+      throw Error(`Armonel cached archive failed SHA-256 verification: ${release.file}`);
+    }
+    if (allowMissing && !project) return null;
+    throw Error(`Missing ${release.file}. Provide ${bundledArchive(root, release)} or set SODUWORK_ARMONEL_NPM_REGISTRY.`);
+  }
+  const url = new URL(base);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw Error('Invalid Armonel registry URL');
+  const prefix = npmRegistry ? release.name + '/-' : release.version;
+  url.pathname = url.pathname.replace(/\/+$/, '') + '/' + prefix + '/' + release.file;
   // Use the job token only for this GitLab API. Storage redirects receive no credentials.
   const get = (current, options, callback) => {
-    if (env.CI_JOB_TOKEN && api && url.href.startsWith(api + '/') && String(current) === url.href) {
+    if (!npmRegistry && env.CI_JOB_TOKEN && api && url.href.startsWith(api + '/') && String(current) === url.href) {
       options.headers['JOB-TOKEN'] = env.CI_JOB_TOKEN;
     }
     return https.get(current, options, callback);
@@ -81,13 +93,47 @@ async function resolveArchive(root, release, env) {
   });
 }
 
+async function vendorArchives({ root = path.resolve(__dirname, '..'), env = process.env, releaseManifest = manifest } = {}) {
+  for (const pkg of releaseManifest.packages.filter(entry => entry.target)) {
+    const release = { ...pkg, version: releaseManifest.version };
+    const target = bundledArchive(root, release);
+    if (verified(target, release.sha256)) continue;
+    const source = await cachedOrRemoteArchive(root, release, env);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const partial = target + '.' + crypto.randomUUID() + '.partial';
+    try {
+      fs.copyFileSync(source, partial, fs.constants.COPYFILE_EXCL);
+      if (!verified(partial, release.sha256)) throw Error(`Armonel archive failed SHA-256 verification: ${release.file}`);
+      replaceFileSync(partial, target);
+    } finally {
+      fs.rmSync(partial, { force: true });
+    }
+  }
+}
+
 async function prepare({ root = path.resolve(__dirname, '..'), platform = process.platform, arch = process.arch,
-  env = process.env } = {}) {
+  env = process.env, sourceCheckout = false, archiveRoot = root } = {}) {
   const release = selectRelease(platform, arch);
   if (!release) return null;
-  const archive = await resolveArchive(root, release, env);
+  const supplied = env.SODUWORK_ARMONEL_PACKAGE?.trim();
+  let archive = supplied ? path.resolve(supplied) : bundledArchive(archiveRoot, release);
+  if (!supplied && !fs.lstatSync(archive, { throwIfNoEntry: false })) {
+    archive = await cachedOrRemoteArchive(root, release, env, sourceCheckout);
+  }
   const runtime = path.join(root, '.runtime', 'armonel');
   const output = path.join(runtime, release.target);
+  if (!archive) {
+    const executable = path.join(output, release.executable);
+    if (!fs.lstatSync(executable, { throwIfNoEntry: false })) {
+      console.log(`[SoduWork Armonel runtime] Optional source runtime unavailable; set SODUWORK_ARMONEL_NPM_REGISTRY to prepare ${release.target}.`);
+      return null;
+    }
+    if (!verified(executable, release.binary_sha256) || !noticeNames.every(name => fileStat(path.join(output, name)))) {
+      throw Error(`Invalid staged Armonel runtime. Provide ${release.file} or set SODUWORK_ARMONEL_NPM_REGISTRY to repair it.`);
+    }
+    if (canExecute(platform, arch)) verifyExecutable(executable, release);
+    return output;
+  }
   const members = ['package/package.json', `package/bin/${release.executable}`,
     ...noticeNames.map(name => 'package/' + name)].sort();
   fs.mkdirSync(runtime, { recursive: true });
@@ -120,7 +166,12 @@ async function prepare({ root = path.resolve(__dirname, '..'), platform = proces
 }
 
 if (require.main === module) {
-  prepare().catch(error => { console.error(error.message); process.exitCode = 1; });
+  const [mode, checkoutClient] = process.argv.slice(2);
+  const run = mode === '--vendor' ? vendorArchives() : prepare({
+    sourceCheckout: mode === '--source',
+    archiveRoot: mode === '--source' && checkoutClient ? path.resolve(checkoutClient) : undefined,
+  });
+  run.catch(error => { console.error(error.message); process.exitCode = 1; });
 }
 
-module.exports = { prepare, verifyExecutable, canExecute };
+module.exports = { prepare, vendorArchives, verifyExecutable, canExecute };

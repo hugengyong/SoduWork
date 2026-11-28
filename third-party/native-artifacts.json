@@ -52,7 +52,7 @@
         "id": "armonel-runtime",
         "component": "Armonel Windows x64 原生程序",
         "role": "ACP Agent 执行底座",
-        "version": "0.0.10",
+        "version": "0.0.11-rc.4",
         "architecture": "x64",
         "license": "MIT；原始 LICENSE 和 THIRD_PARTY_LICENSES.txt 随包分发",
         "source": "Armonel 官方 Windows x64 npm 平台包",
@@ -93,7 +93,7 @@
         "id": "armonel-runtime",
         "component": "Armonel Linux x64",
         "role": "ACP Agent",
-        "version": "0.0.10",
+        "version": "0.0.11-rc.4",
         "license": "MIT; LICENSE and THIRD_PARTY_LICENSES.txt",
         "evidence": "client/main/armonel-release.json (linux-x64); resources/armonel/"
       }
@@ -103,7 +103,7 @@
         "id": "armonel-runtime",
         "component": "Armonel macOS arm64 / x64",
         "role": "ACP Agent",
-        "version": "0.0.10",
+        "version": "0.0.11-rc.4",
         "license": "MIT; LICENSE and THIRD_PARTY_LICENSES.txt",
         "evidence": "client/main/armonel-release.json (darwin-arm64, darwin-x64); Contents/Resources/armonel/"
       }

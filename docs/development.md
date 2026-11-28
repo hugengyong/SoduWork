@@ -89,9 +89,11 @@ npm start
 
 ### 在桌面安装包中内置 Armonel
 
-桌面构建按目标架构选择 Armonel 0.0.10，支持 Apple Silicon、Intel Mac、Windows x64 和 Linux x64。使用 GitLab 时，将 `SODUWORK_ARMONEL_PROJECT_ID` 一次性设为托管通用包 `armonel-npm` 的项目数字 ID，并在该项目授权桌面工程的 CI Job Token 读取包。也可以用 `SODUWORK_ARMONEL_PACKAGE_BASE_URL` 指定 HTTPS 镜像，按 `<镜像地址>/<版本>/<文件名>` 提供归档。已校验的下载会缓存复用。
+公共源码包含 Armonel [发布清单](../client/main/armonel-release.json)，当前锁定 `0.0.11-rc.4`。从全新检出构建桌面安装包时，在可访问内网 npm 仓库的构建机上，将 `SODUWORK_ARMONEL_NPM_REGISTRY` 设为该仓库的 HTTPS 根地址（例如 Nexus 的 npm 仓库地址）。构建会按目标平台下载锁定的归档。GitHub Actions 可使用同名仓库变量，运行器也需能访问该地址。离线构建机可预先将目标平台的原包按清单文件名放入 `client/runtime-packages/armonel/<版本>/`。
 
-离线构建时，将各目标平台的归档按原文件名放入 `client/.runtime-cache/armonel/`。同一台 Mac 构建两种架构时，放入两个 Darwin 包即可。构建单一架构或从源码启动时，也可用 `SODUWORK_ARMONEL_PACKAGE` 指向对应归档。沿用原有桌面构建命令，脚本对照[上游发布清单](../client/main/armonel-release.json)核验归档和可执行文件，随包携带程序及两个许可文件。macOS 构建会从 `SoduWork.app/Contents/Resources/armonel/armonel` 验证一轮离线 ACP 对话。Apple Silicon 构建机验证 Intel 包时需要 Rosetta。用户安装 SoduWork 后即可选择 Armonel。
+维护者可在 `client/` 运行 `npm run vendor:armonel`，将 Apple Silicon、Intel Mac、Windows x64 和 Linux x64 的四个原始归档同步到 `client/runtime-packages/armonel/<版本>/`。归档齐备后，Armonel 的打包步骤可离线完成。桌面源码启动器和 `npm start` 会在包可用时准备本机程序。全新检出尚未配置包源时，也可以启动桌面使用其他底座。安装器按目标架构校验归档和程序摘要，随包提供可执行文件和两份许可文件，用户无需安装 npm。macOS 构建会从 `SoduWork.app/Contents/Resources/armonel/armonel` 验证离线 ACP 对话。在 Apple Silicon 上构建并验证 Intel 安装器需要 Rosetta。
+
+构建单个平台时，可用 `SODUWORK_ARMONEL_PACKAGE` 直接指定归档。使用通用镜像时，可将 `SODUWORK_ARMONEL_PACKAGE_BASE_URL` 指向按 `<base>/<版本>/<文件名>` 提供归档的镜像。GitLab CI 可将 `SODUWORK_ARMONEL_PROJECT_ID` 设为托管 `armonel-npm` 通用包的数字项目 ID，并为作业令牌授予读取权限。
 
 模型将单次输出全部用于思考时，Armonel 会按模型已声明的能力调整恢复请求。对于缺少能力声明的网关别名，运维人员可以先验证 `reasoning_effort=none` 能返回正文或完整工具调用，再把端点和模型名写入 `$SODUWORK_DATA_ROOT/.armonel/recovery-profiles.json`，例如 `{"https://gateway.example/v1":{"deployment":"openai"}}`。Runner 在启动 Armonel 时读取，开关只用于恢复请求。模型的显式限制优先。
 

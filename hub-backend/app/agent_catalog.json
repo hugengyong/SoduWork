@@ -76,7 +76,7 @@
       "install": {
         "installer": "bundled",
         "pkg": "armonel",
-        "version": "0.0.10",
+        "version": "0.0.11-rc.4",
         "blurb": "SoduWork 内置的 ACP Agent，使用已配置的 OpenAI 兼容模型。",
         "warn": "",
         "config_how": "由 SoduWork 为当前执行传入模型配置与权限。"

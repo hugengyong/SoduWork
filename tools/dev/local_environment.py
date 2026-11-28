@@ -558,7 +558,7 @@ def prepare_desktop(state: Path, log: Path) -> Path:
         run([node, str(client / 'scripts/prepare-shell-runtime.cjs')], cwd=client, log=log,
             env=cache_env,
             label='[Desktop] 准备命令运行环境 / Preparing the command runtime')
-    if any(cache_env.get(key, '').strip() for key in ('SODUWORK_ARMONEL_PACKAGE', 'SODUWORK_ARMONEL_PACKAGE_BASE_URL')):
-        run([node, str(client / 'scripts/prepare-armonel-runtime.cjs')], cwd=client, log=log,
-            env=cache_env, label='[Desktop] 准备 Armonel / Preparing bundled Armonel')
+    # The generated client stages its own executable; read only the pinned archive from the checkout.
+    run([node, str(client / 'scripts/prepare-armonel-runtime.cjs'), '--source', str(ROOT / 'client')], cwd=client, log=log,
+        env=cache_env, label='[Desktop] 准备 Armonel / Preparing bundled Armonel')
     return client
