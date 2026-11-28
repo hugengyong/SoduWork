@@ -91,7 +91,8 @@ test('each supported installer resolves its pinned Armonel resources and rejects
   assert.equal(agent.install.installer, 'bundled');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-armonel-gate-'));
   t.after(() => { assert.equal(path.dirname(temp), os.tmpdir()); fs.rmSync(temp, { recursive: true, force: true }); });
-  await assert.rejects(prepare({ root: temp, platform: 'darwin', arch: 'arm64', env: {} }), /Missing armonel-darwin-arm64/);
+  mockArchiveRequests(t, () => ({ status: 404 }));
+  await assert.rejects(prepare({ root: temp, platform: 'darwin', arch: 'arm64', env: {} }), /HTTP 404/);
   for (const [platform, arch, section] of armonelTargets) {
     const release = selectRelease(platform, arch);
     assert.equal(agent.install.version, release.version);
@@ -109,14 +110,25 @@ test('each supported installer resolves its pinned Armonel resources and rejects
   assert.equal(bundledExecutable({ isPackaged: true }, temp, 'win32', 'arm64'), null);
 });
 
-test('source startup tolerates an unconfigured Armonel but rejects invalid configuration and payloads', async t => {
+test('source startup tolerates an unreachable default registry but rejects bad configuration and payloads', async t => {
   const { prepare } = require('../scripts/prepare-armonel-runtime.cjs');
   const release = require('../main/armonel-runtime.cjs').selectRelease('win32', 'x64');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-armonel-source-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const options = { root: temp, platform: 'win32', arch: 'x64', env: {}, sourceCheckout: true };
+  const offline = { error: Object.assign(Error('registry offline'), { code: 'ENOTFOUND' }) };
+  let response = offline;
+  mockArchiveRequests(t, () => response);
   assert.equal(await prepare(options), null);
   assert.equal(fs.existsSync(path.join(temp, '.runtime')), false);
+  await assert.rejects(prepare({ ...options, sourceCheckout: false }), { code: 'ENOTFOUND' });
+  await assert.rejects(prepare({ ...options, env: { SODUWORK_ARMONEL_NPM_REGISTRY: 'https://nexus.example.test' } }),
+    { code: 'ENOTFOUND' });
+  response = { status: 404 };
+  await assert.rejects(prepare(options), /HTTP 404/);
+  response = {};
+  await assert.rejects(prepare(options), /SHA-256 mismatch/);
+  response = offline;
   await assert.rejects(prepare({ ...options, env: { SODUWORK_ARMONEL_NPM_REGISTRY: 'http://insecure.example.test' } }), /Invalid Armonel registry URL/);
   await assert.rejects(prepare({ ...options, env: { SODUWORK_ARMONEL_PACKAGE: path.join(temp, 'missing.tgz') } }), { code: 'ENOENT' });
   const checkout = path.join(temp, 'checkout', 'client');
@@ -154,6 +166,7 @@ test('a clean checkout prepares each pinned Armonel offline and runs native ACP 
   fs.mkdirSync(path.join(checkout, archives), { recursive: true });
   const cache = path.join(temp, '.runtime-cache', 'armonel');
   fs.mkdirSync(cache, { recursive: true });
+  const calls = mockArchiveRequests(t, () => ({ status: 404 }));
   for (const [platform, arch, section] of armonelTargets) {
     const release = selectRelease(platform, arch);
     const archive = path.join(archives, release.file);
@@ -165,9 +178,11 @@ test('a clean checkout prepares each pinned Armonel offline and runs native ACP 
     const options = { root: temp, platform, arch, env: {}, archiveRoot: checkout };
     const staged = await prepare(options);
     fs.unlinkSync(path.join(checkout, archive));
-    fs.unlinkSync(path.join(cache, release.file));
+    // The stale cache must not force a download over a valid staged executable.
+    const before = calls.length;
     assert.equal(await prepare({ ...options, sourceCheckout: true }), staged);
-    await assert.rejects(prepare(options), /Missing armonel/);
+    assert.equal(calls.length, before, 'validated source runtime must start offline');
+    await assert.rejects(prepare(options), /HTTP 404/);
     const resolved = await copyArmonelToResources(temp, platform, arch, section);
     assert.equal(createHash('sha256').update(fs.readFileSync(resolved)).digest('hex'), release.binary_sha256);
     if (platform === process.platform && arch === process.arch) {
@@ -182,12 +197,17 @@ function mockArchiveRequests(t, route) {
   const calls = [];
   t.mock.method(require('node:https'), 'get', (url, options, respond) => {
     calls.push([String(url), new Headers(options.headers).get('job-token')]);
-    const { location, body } = route(String(url));
+    const { location, body, status = 200, error } = route(String(url));
+    const request = Object.assign(new EventEmitter(), { setTimeout() {} });
+    if (error) {
+      queueMicrotask(() => request.emit('error', error));
+      return request;
+    }
     const response = body ?? Readable.from([]);
-    response.statusCode = location ? 302 : 200;
+    response.statusCode = location ? 302 : status;
     response.headers = location ? { location } : {};
     queueMicrotask(() => respond(response));
-    return Object.assign(new EventEmitter(), { setTimeout() {} });
+    return request;
   });
   return calls;
 }
@@ -222,6 +242,29 @@ test('Armonel registry selects npm before GitLab, scopes job tokens, and discard
   assert.equal(fs.existsSync(path.join(temp, '.runtime', 'armonel')), false);
 });
 
+test('source startup and installers fetch every target from the project registry without machine configuration', async t => {
+  const { prepare } = require('../scripts/prepare-armonel-runtime.cjs');
+  const { selectRelease } = require('../main/armonel-runtime.cjs');
+  const registry = require('../scripts/armonel-npm-registry.json');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-armonel-default-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const calls = mockArchiveRequests(t, () => ({ status: 404 }));
+  for (const [platform, arch] of armonelTargets) {
+    const release = selectRelease(platform, arch);
+    for (const sourceCheckout of [true, false]) {
+      // npm lifecycle scripts can include a general registry even on an otherwise unconfigured host.
+      const env = sourceCheckout ? {} : { npm_config_registry: 'https://registry.npmjs.org/' };
+      await assert.rejects(prepare({ root: temp, platform, arch, sourceCheckout, env }), /HTTP 404/);
+      assert.deepEqual(calls.pop(), [registry.replace(/\/+$/, '') + '/' + release.name + '/-/' + release.file, null]);
+    }
+  }
+  const release = selectRelease('darwin', 'arm64');
+  const mirror = 'https://mirror.example.test/armonel';
+  await assert.rejects(prepare({ root: temp, platform: 'darwin', arch: 'arm64',
+    env: { SODUWORK_ARMONEL_PACKAGE_BASE_URL: mirror } }), /HTTP 404/);
+  assert.deepEqual(calls, [[mirror + '/' + release.version + '/' + release.file, null]]);
+});
+
 test('vendoring Armonel fills missing platform packages and works offline on later runs', async t => {
   const { vendorArchives } = require('../scripts/prepare-armonel-runtime.cjs');
   const { Readable } = require('node:stream');
@@ -243,7 +286,8 @@ test('vendoring Armonel fills missing platform packages and works offline on lat
   const [local, cached, ...missing] = releases;
   fs.writeFileSync(path.join(bundled, local.file), local.file);
   fs.writeFileSync(path.join(cache, cached.sha256), cached.file);
-  const registry = 'https://nexus.example.test/repository/npm';
+  fs.writeFileSync(path.join(cache, missing[0].sha256), 'corrupt cached download');
+  const registry = require('../scripts/armonel-npm-registry.json').replace(/\/+$/, '');
   const sources = new Map(missing.map(release => [
     `${registry}/${release.name}/-/${release.file}`, release.file,
   ]));
@@ -251,9 +295,10 @@ test('vendoring Armonel fills missing platform packages and works offline on lat
     assert.ok(sources.has(url), 'Unexpected archive request: ' + url);
     return { body: Readable.from([sources.get(url)]) };
   });
-  await vendorArchives({ root: temp, releaseManifest, env: { SODUWORK_ARMONEL_NPM_REGISTRY: registry } });
+  await vendorArchives({ root: temp, releaseManifest, env: {} });
   assert.deepEqual(calls.map(([url]) => url).sort(), [...sources.keys()].sort());
   assert.deepEqual(fs.readdirSync(bundled).sort(), releases.map(release => release.file).sort());
+  assert.equal(fs.readFileSync(path.join(cache, missing[0].sha256), 'utf8'), missing[0].file);
   for (const release of releases) {
     const bytes = fs.readFileSync(path.join(bundled, release.file));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), release.sha256);

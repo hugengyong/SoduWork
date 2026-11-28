@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const https = require('node:https');
 const { spawnSync } = require('node:child_process');
 const manifest = require('../main/armonel-release.json');
+const defaultRegistry = require('./armonel-npm-registry.json');
 const { selectRelease, noticeNames } = require('../main/armonel-runtime.cjs');
 const { replaceFileSync } = require('../main/verified-file-replace.cjs');
 const { extractArchive, ensureArchive, downloadFile } = require('./prepare-node-runtime.cjs');
@@ -59,7 +60,7 @@ function bundledArchive(root, release) {
   return path.join(root, 'runtime-packages', 'armonel', release.version, release.file);
 }
 
-async function cachedOrRemoteArchive(root, release, env, allowMissing = false) {
+async function cachedOrRemoteArchive(root, release, env, sourceExecutable) {
   const cache = path.join(root, '.runtime-cache', 'armonel');
   const named = path.join(cache, release.file);
   if (verified(named, release.sha256)) return named;
@@ -67,15 +68,16 @@ async function cachedOrRemoteArchive(root, release, env, allowMissing = false) {
   if (verified(cached, release.sha256)) return cached;
   const project = env.SODUWORK_ARMONEL_PROJECT_ID?.trim();
   const api = env.CI_API_V4_URL?.replace(/\/+$/, '');
-  const npmRegistry = env.SODUWORK_ARMONEL_NPM_REGISTRY?.trim();
+  let npmRegistry = env.SODUWORK_ARMONEL_NPM_REGISTRY?.trim();
   let base = npmRegistry || env.SODUWORK_ARMONEL_PACKAGE_BASE_URL?.trim();
   if (!base && api && /^\d+$/.test(project || '')) base = api + '/projects/' + project + '/packages/generic/armonel-npm';
+  const optionalDefault = !base && Boolean(sourceExecutable);
   if (!base) {
-    if ([named, cached].some(file => fs.lstatSync(file, { throwIfNoEntry: false }))) {
-      throw Error(`Armonel cached archive failed SHA-256 verification: ${release.file}`);
-    }
-    if (allowMissing && !project) return null;
-    throw Error(`Missing ${release.file}. Provide ${bundledArchive(root, release)} or set SODUWORK_ARMONEL_NPM_REGISTRY.`);
+    if (project) throw Error('Armonel GitLab packages require a numeric project ID and CI_API_V4_URL');
+    if (optionalDefault && verified(sourceExecutable, release.binary_sha256) &&
+        noticeNames.every(name => fileStat(path.join(path.dirname(sourceExecutable), name)))) return null;
+    npmRegistry = defaultRegistry;
+    base = npmRegistry;
   }
   const url = new URL(base);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw Error('Invalid Armonel registry URL');
@@ -88,9 +90,24 @@ async function cachedOrRemoteArchive(root, release, env, allowMissing = false) {
     }
     return https.get(current, options, callback);
   };
-  return ensureArchive({ sha256: release.sha256, urls: [url.href] }, cache, {
-    download: (source, target) => downloadFile(source, target, { get }),
-  });
+  try {
+    return await ensureArchive({ sha256: release.sha256, urls: [url.href] }, cache, {
+      download: (source, target) => downloadFile(source, target, { get, responseTimeoutMs: optionalDefault ? 15000 : undefined }),
+    });
+  } catch (error) {
+    // A source desktop without access to the internal registry can still use other agents.
+    const unavailable = ['ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'ECONNREFUSED',
+      'ECONNRESET', 'ETIMEDOUT', 'EPIPE'].includes(error.code) ||
+      ['Runtime download exceeded total time limit', 'Runtime download idle timeout'].includes(error.message);
+    if (!optionalDefault || !unavailable) throw error;
+    const concurrentArchive = [named, cached].find(file => verified(file, release.sha256));
+    if (concurrentArchive) return concurrentArchive;
+    if ([named, cached].some(file => fs.lstatSync(file, { throwIfNoEntry: false }))) {
+      throw Error(`Armonel cached archive failed SHA-256 verification and the registry is unavailable: ${release.file}`, { cause: error });
+    }
+    console.warn(`[SoduWork Armonel runtime] Cannot reach the default registry for ${release.target} (${error.code || error.message}). Connect to the registry and restart to enable Armonel.`);
+    return null;
+  }
 }
 
 async function vendorArchives({ root = path.resolve(__dirname, '..'), env = process.env, releaseManifest = manifest } = {}) {
@@ -115,19 +132,16 @@ async function prepare({ root = path.resolve(__dirname, '..'), platform = proces
   env = process.env, sourceCheckout = false, archiveRoot = root } = {}) {
   const release = selectRelease(platform, arch);
   if (!release) return null;
+  const runtime = path.join(root, '.runtime', 'armonel');
+  const output = path.join(runtime, release.target);
+  const executable = path.join(output, release.executable);
   const supplied = env.SODUWORK_ARMONEL_PACKAGE?.trim();
   let archive = supplied ? path.resolve(supplied) : bundledArchive(archiveRoot, release);
   if (!supplied && !fs.lstatSync(archive, { throwIfNoEntry: false })) {
-    archive = await cachedOrRemoteArchive(root, release, env, sourceCheckout);
+    archive = await cachedOrRemoteArchive(root, release, env, sourceCheckout ? executable : undefined);
   }
-  const runtime = path.join(root, '.runtime', 'armonel');
-  const output = path.join(runtime, release.target);
   if (!archive) {
-    const executable = path.join(output, release.executable);
-    if (!fs.lstatSync(executable, { throwIfNoEntry: false })) {
-      console.log(`[SoduWork Armonel runtime] Optional source runtime unavailable; set SODUWORK_ARMONEL_NPM_REGISTRY to prepare ${release.target}.`);
-      return null;
-    }
+    if (!fs.lstatSync(executable, { throwIfNoEntry: false })) return null;
     if (!verified(executable, release.binary_sha256) || !noticeNames.every(name => fileStat(path.join(output, name)))) {
       throw Error(`Invalid staged Armonel runtime. Provide ${release.file} or set SODUWORK_ARMONEL_NPM_REGISTRY to repair it.`);
     }
